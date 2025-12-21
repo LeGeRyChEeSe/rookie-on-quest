@@ -24,6 +24,7 @@ A standalone Meta Quest application to browse, download, and install VR games na
 - [Key Features](#key-features)
 - [Download & Installation](#download--installation)
 - [Build from Source](#build-from-source)
+- [Contributing](#contributing)
 
 ---
 
@@ -85,3 +86,31 @@ adb install RookieOnQuest.apk
 1. Open the `RookieOnQuest` folder in Unity Hub.
 2. Wait for the automatic configuration to complete (check the Console for logs).
 3. Go to `File > Build Settings` and click **Build**.
+
+---
+
+## Contributing
+
+We welcome contributions! To maintain a clean project history, we strictly follow the **[Conventional Commits](https://www.conventionalcommits.org/)** specification.
+
+### Naming Convention
+All commit messages and pull requests should use the following prefixes:
+- `feat:` for new features.
+- `fix:` for bug fixes.
+- `docs:` for documentation changes.
+- `style:` for formatting or UI adjustments (no logic changes).
+- `refactor:` for code changes that neither fix a bug nor add a feature.
+- `perf:` for performance improvements.
+- `chore:` for maintenance tasks.
+
+### Share Ideas & Report Bugs
+If you have an idea for a new feature or have found a bug, please open an issue:
+- [Report a Bug](https://github.com/LeGeRyChEeSe/rookie-on-quest/issues/new?template=bug_report.md)
+- [Suggest a Feature](https://github.com/LeGeRyChEeSe/rookie-on-quest/issues/new?template=feature_request.md)
+- [Ask a Question or Give Feedback](https://github.com/LeGeRyChEeSe/rookie-on-quest/issues/new?template=question.md)
+
+### Submit a Pull Request
+1. Fork the repository.
+2. Create a new branch (`feat/your-feature` or `fix/your-fix`).
+3. Commit your changes following the naming convention.
+4. Submit a pull request with a clear description of your changes.
