@@ -2,13 +2,19 @@
 
 <p align="center">
   <img src="RookieOnQuest/Assets/Icons/app_icon.png" width="256" alt="Rookie On Quest Icon">
+  <br>
+  <img src="https://img.shields.io/github/v/release/LeGeRyChEeSe/rookie-on-quest?style=for-the-badge&color=orange" alt="Latest Release">
+  <img src="https://img.shields.io/github/stars/LeGeRyChEeSe/rookie-on-quest?style=for-the-badge&color=2ea44f" alt="Stars">
+  <img src="https://img.shields.io/github/last-commit/LeGeRyChEeSe/rookie-on-quest?style=for-the-badge" alt="Last Commit">
+  <img src="https://img.shields.io/github/downloads/LeGeRyChEeSe/rookie-on-quest/total?style=for-the-badge&color=007ec6" alt="Downloads">
+  <img src="https://komarev.com/ghpvc/?username=LeGeRyChEeSe&repo=rookie-on-quest&style=for-the-badge&label=VIEWS&color=blue" alt="Views">
 </p>
 
 A standalone Meta Quest application to browse, download, and install VR games natively. This project brings the power of the original Rookie Sideloader directly to your headset, eliminating the need for a PC during installation.
 
 ## Overview
 
-Inspired by the official [VRPirates Rookie Sideloader](https://wiki.vrpirates.wiki/en/How-to-Sideload/Android-Sideloader), **Rookie On Quest** is built with Unity 6 to provide a modern, high-performance interface for managing your VR library.
+Inspired by the official [VRPirates Rookie Sideloader](https://github.com/VRPirates/rookie), **Rookie On Quest** is built with Unity 6 to provide a modern, high-performance interface for managing your VR library.
 
 ### Key Features
 - **Zero Configuration**: Open the project and everything (Android settings, dependencies, scenes) is configured automatically.
