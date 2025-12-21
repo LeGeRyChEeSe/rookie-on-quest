@@ -8,9 +8,24 @@
   <img src="https://img.shields.io/github/last-commit/LeGeRyChEeSe/rookie-on-quest?style=for-the-badge" alt="Last Commit">
   <img src="https://img.shields.io/github/downloads/LeGeRyChEeSe/rookie-on-quest/total?style=for-the-badge&color=007ec6" alt="Downloads">
   <img src="https://komarev.com/ghpvc/?username=LeGeRyChEeSe&repo=rookie-on-quest&style=for-the-badge&label=VIEWS&color=blue" alt="Views">
+  <br><br>
+  <a href="https://github.com/LeGeRyChEeSe/rookie-on-quest/releases/latest">
+    <img src="https://img.shields.io/badge/DOWNLOAD-LATEST_APK-orange?style=for-the-badge&logo=android&logoColor=white" alt="Download Latest APK">
+  </a>
 </p>
 
 A standalone Meta Quest application to browse, download, and install VR games natively. This project brings the power of the original Rookie Sideloader directly to your headset, eliminating the need for a PC during installation.
+
+---
+
+### Table of Contents
+- [Overview](#overview)
+- [Special Thanks](#special-thanks)
+- [Key Features](#key-features)
+- [Download & Installation](#download--installation)
+- [Build from Source](#build-from-source)
+
+---
 
 ## Overview
 
@@ -21,16 +36,46 @@ A standalone Meta Quest application to browse, download, and install VR games na
 A huge thank you to the **Rookie developers and the VRPirates community**. Their hard work in maintaining the servers, catalog, and the original sideloader ecosystem is what makes this project possible. This app is a tribute to their dedication to the VR community.
 
 ### Key Features
-- **Zero Configuration**: Open the project and everything (Android settings, dependencies, scenes) is configured automatically.
-- **Native Sideloading**: Direct APK installation from the headset.
-- **Smart Caching & Indexing**: Fast startup and optimized icon management.
-- **Progressive Loading**: Game list appears instantly while icons load in the background.
-- **High Performance**: Virtualized scrolling and aggressive memory management for 2400+ entries.
+- **Standalone Sideloading**: Install games directly on your Meta Quest without needing a PC.
+- **Full Catalog Access**: Browse and search through the complete VRPirates library natively.
+- **Optimized Performance**: Smooth and fast navigation through 2400+ game entries.
+- **Zero Setup**: Open the app and start browsing immediately with no configuration required.
 
 > [!TIP]
 > **Performance Note**: Upon the first launch or after an update, the application extracts over 2400 icons in the background. An icon toggle is available in the settings if you prefer maximum performance.
 
-## How to Build
+---
+
+## Download & Installation
+
+### 1. Download the App
+Get the latest version of **Rookie On Quest**:
+
+[![Download Latest APK](https://img.shields.io/badge/DOWNLOAD-LATEST_APK-orange?style=for-the-badge&logo=android&logoColor=white)](https://github.com/LeGeRyChEeSe/rookie-on-quest/releases/latest)
+
+### 2. Prepare your Quest
+Ensure your Meta Quest is in **Developer Mode**. If you haven't enabled it yet:
+1. Go to the [Meta Quest Developer Dashboard](https://dashboard.oculus.com/).
+2. Create an "Organization".
+3. Open the Meta Quest app on your phone, go to **Devices > Headset Settings > Developer Mode**, and toggle it on.
+
+### 3. Install the APK
+You can install the downloaded `.apk` file using one of the following methods:
+
+#### Method A: SideQuest (Recommended)
+1. Open **SideQuest** on your PC.
+2. Connect your Quest via USB.
+3. Drag and drop the `RookieOnQuest.apk` file into the SideQuest window.
+
+#### Method B: ADB (Command Line)
+If you have ADB installed, run:
+```bash
+adb install RookieOnQuest.apk
+```
+
+---
+
+## Build from Source
 
 ### Prerequisites
 - **Unity 6** (Version 6000.3.2f1 or newer recommended).
@@ -40,13 +85,3 @@ A huge thank you to the **Rookie developers and the VRPirates community**. Their
 1. Open the `RookieOnQuest` folder in Unity Hub.
 2. Wait for the automatic configuration to complete (check the Console for logs).
 3. Go to `File > Build Settings` and click **Build**.
-
-## How to Install
-
-1. Enable **Developer Mode** on your Meta Quest.
-2. Connect your Quest to your PC.
-3. Use `adb install RookieOnQuest.apk` or drag and drop the APK into SideQuest.
-4. Launch the app from the **Unknown Sources** section of your library.
-
----
-*Disclaimer: This project is an unofficial client and is not affiliated with the official Rookie/VRPirates team.*
