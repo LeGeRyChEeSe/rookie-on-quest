@@ -1,0 +1,20 @@
+# Unity folders
+RookieOnQuest/Library/
+RookieOnQuest/Temp/
+RookieOnQuest/Obj/
+RookieOnQuest/Logs/
+RookieOnQuest/UserSettings/
+RookieOnQuest/Builds/
+RookieOnQuest/.utmp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# User specific
+*.csproj
+*.sln
+*.user
+*.userprefs
+
+rookie/
