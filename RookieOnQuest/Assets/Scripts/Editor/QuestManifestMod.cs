@@ -20,6 +20,7 @@ public class QuestManifestMod : IPostGenerateGradleAndroidProject
         AddPermission(xmlDoc, "android.permission.REQUEST_INSTALL_PACKAGES");
         AddPermission(xmlDoc, "android.permission.READ_EXTERNAL_STORAGE");
         AddPermission(xmlDoc, "android.permission.WRITE_EXTERNAL_STORAGE");
+        AddPermission(xmlDoc, "android.permission.MANAGE_EXTERNAL_STORAGE");
 
         // 2. Find Main Activity and Add 2D Category
         XmlElement manifest = xmlDoc.SelectSingleNode("manifest") as XmlElement;

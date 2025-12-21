@@ -62,6 +62,11 @@ namespace RookieOnQuest
         private IEnumerator InitializeRoutine()
         {
             UIManager.Instance.ShowProgress("Rookie On Quest\nChecking for updates...", 0f);
+            
+            #if UNITY_ANDROID && !UNITY_EDITOR
+            yield return StartCoroutine(RequestPermissions());
+            #endif
+
             yield return StartCoroutine(FetchPublicConfig());
 
             if (string.IsNullOrEmpty(_baseMirrorUrl))
@@ -332,13 +337,22 @@ namespace RookieOnQuest
                     System.GC.Collect(); // Free memory between parts
                 }
 
-                UIManager.Instance.ShowProgress("Extracting APK...", 0.99f);
-                string finalApk = null;
+                UIManager.Instance.ShowProgress("Extracting files...", 0.99f);
+                string extractionDir = null;
 
                 var extractTask = Task.Run(() => {
                     try {
-                        if (localPaths.Count == 1 && localPaths[0].EndsWith(".apk")) return localPaths[0];
+                        string outDir = Path.Combine(tempFolder, "extracted");
+                        if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
+                        Directory.CreateDirectory(outDir);
 
+                        // If it's a direct APK download, just copy it to the extraction dir
+                        if (localPaths.Count == 1 && localPaths[0].EndsWith(".apk")) {
+                            File.Copy(localPaths[0], Path.Combine(outDir, Path.GetFileName(localPaths[0])));
+                            return outDir;
+                        }
+
+                        // Merge 7z parts
                         string mergedPath = Path.Combine(tempFolder, "combined.7z");
                         using (var outStream = File.Create(mergedPath))
                         {
@@ -348,101 +362,121 @@ namespace RookieOnQuest
                             }
                         }
 
-                        string outDir = Path.Combine(tempFolder, "extracted");
-                        if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
-                        Directory.CreateDirectory(outDir);
-
+                        // Extract APK and OBBs
                         using (var archive = SevenZipArchive.Open(mergedPath, new SharpCompress.Readers.ReaderOptions { Password = _mirrorPassword }))
                         {
-                            var entry = archive.Entries.FirstOrDefault(e => e.Key.EndsWith(".apk", StringComparison.OrdinalIgnoreCase));
-                            if (entry != null)
+                            long totalSize = archive.Entries.Where(e => !e.IsDirectory && (e.Key.ToLower().EndsWith(".apk") || e.Key.ToLower().EndsWith(".obb"))).Sum(e => e.Size);
+                            long totalExtracted = 0;
+
+                            foreach (var entry in archive.Entries)
                             {
-                                string outPath = Path.Combine(outDir, Path.GetFileName(entry.Key));
-                                long totalSize = entry.Size;
-                                long extractedSize = 0;
-
-                                using (var entryStream = entry.OpenEntryStream())
-                                using (var outFs = File.Create(outPath))
+                                if (entry.IsDirectory) continue;
+                                
+                                string key = entry.Key.ToLower();
+                                if (key.EndsWith(".apk") || key.EndsWith(".obb"))
                                 {
-                                    byte[] buffer = new byte[81920]; 
-                                    int bytesRead;
-                                    float lastUIUpdateProgress = -1f;
+                                    string fileName = Path.GetFileName(entry.Key);
+                                    long entrySize = entry.Size;
+                                    long entryExtracted = 0;
 
-                                    while ((bytesRead = entryStream.Read(buffer, 0, buffer.Length)) > 0)
+                                    using (var entryStream = entry.OpenEntryStream())
+                                    using (var outFs = File.Create(Path.Combine(outDir, fileName)))
                                     {
-                                        outFs.Write(buffer, 0, bytesRead);
-                                        extractedSize += bytesRead;
-                                        
-                                        float currentProgress = (float)extractedSize / totalSize;
-                                        // Only update UI if progress increased by at least 1%
-                                        if (currentProgress - lastUIUpdateProgress >= 0.01f) 
+                                        byte[] buffer = new byte[81920];
+                                        int bytesRead;
+                                        while ((bytesRead = entryStream.Read(buffer, 0, buffer.Length)) > 0)
                                         {
-                                            lastUIUpdateProgress = currentProgress;
+                                            outFs.Write(buffer, 0, bytesRead);
+                                            entryExtracted += bytesRead;
+                                            totalExtracted += bytesRead;
+
+                                            float overallProgress = (float)totalExtracted / totalSize;
                                             UnityMainThreadDispatcher.Instance().Enqueue(() => {
-                                                UIManager.Instance.ShowProgress($"Extracting APK...", currentProgress);
+                                                UIManager.Instance.ShowProgress($"Extracting {fileName}...", overallProgress);
                                             });
                                         }
                                     }
                                 }
-                                return outPath;
                             }
                         }
+                        return outDir;
                     } catch (Exception ex) { Debug.LogError($"Extraction error: {ex.Message}"); }
                     return null;
                 });
 
                 while (!extractTask.IsCompleted) yield return null;
-                finalApk = extractTask.Result;
+                extractionDir = extractTask.Result;
 
-                UIManager.Instance.HideProgress();
-                _isInstalling = false; // Resume background extraction
-                
-                if (!string.IsNullOrEmpty(finalApk) && File.Exists(finalApk))
+                if (!string.IsNullOrEmpty(extractionDir) && Directory.Exists(extractionDir))
                 {
-                    try {
-                        // Use a specific name to avoid locking issues with "install.apk"
-                        string safePath = Path.Combine(Application.persistentDataPath, packageName + ".apk");
-                        
-                        if (File.Exists(safePath)) { 
-                            Debug.Log("Old APK found, deleting...");
-                            File.Delete(safePath);
+                    string[] apks = Directory.GetFiles(extractionDir, "*.apk");
+                    if (apks.Length > 0)
+                    {
+                        string finalApk = apks[0];
+                        try {
+                            // 1. Move OBB files FIRST
+                            UIManager.Instance.ShowProgress("Installing OBB files...", 0.5f);
+                            MoveObbFiles(extractionDir, packageName);
+
+                            // 2. Prepare and install APK
+                            string sanitizedName = Regex.Replace(gameName, @"[^a-zA-Z0-9_\-\.]", "_");
+                            string safePath = Path.Combine(Application.persistentDataPath, sanitizedName + ".apk");
+                            
+                            if (File.Exists(safePath)) { 
+                                Debug.Log($"Old APK found for {gameName}, deleting...");
+                                File.Delete(safePath);
+                            }
+                            
+                            File.Move(finalApk, safePath);
+
+                            long size = new FileInfo(safePath).Length;
+                            Debug.Log($"SUCCESS: APK ready for {packageName} ({size} bytes). Launching install...");
+                            
+                            UIManager.Instance.ShowProgress("Launching Installer...", 0.9f);
+                            UIManager.Instance.PlayNotificationSound();
+                            InstallManager.Instance.InstallAPK(safePath);
+
+                            // Hide progress immediately as the Android Installer takes over the screen
+                            UIManager.Instance.HideProgress();
+                            _isInstalling = false;
+
+                            // Cleanup segments, merged archive AND the final APK
+                            Task.Run(() => {
+                                try {
+                                    // Small delay to ensure the Android Package Installer has opened the file
+                                    System.Threading.Thread.Sleep(5000);
+                                    
+                                    if (File.Exists(safePath)) {
+                                        File.Delete(safePath);
+                                        Debug.Log($"Cleaned up final APK: {safePath}");
+                                    }
+
+                                    if (Directory.Exists(tempFolder)) {
+                                        Directory.Delete(tempFolder, true);
+                                        Debug.Log("Temporary download folder cleaned up.");
+                                    }
+                                } catch (Exception ex) { Debug.LogWarning("Cleanup error: " + ex.Message); }
+                            });
                         }
-                        
-                        File.Move(finalApk, safePath);
-
-                        long size = new FileInfo(safePath).Length;
-                        Debug.Log($"SUCCESS: APK ready for {packageName} ({size} bytes). Launching install...");
-                        
-                        UIManager.Instance.PlayNotificationSound();
-                        InstallManager.Instance.InstallAPK(safePath);
-
-                        // Cleanup segments, merged archive AND the final APK
-                        Task.Run(() => {
-                            try {
-                                // Small delay to ensure the Android Package Installer has opened the file
-                                System.Threading.Thread.Sleep(2000);
-                                
-                                if (File.Exists(safePath)) {
-                                    File.Delete(safePath);
-                                    Debug.Log($"Cleaned up final APK: {safePath}");
-                                }
-
-                                if (Directory.Exists(tempFolder)) {
-                                    Directory.Delete(tempFolder, true);
-                                    Debug.Log("Temporary download folder cleaned up.");
-                                }
-                            } catch (Exception ex) { Debug.LogWarning("Cleanup error: " + ex.Message); }
-                        });
+                        catch (Exception ex) {
+                            Debug.LogError($"File operation error: {ex.Message}");
+                            UIManager.Instance.HideProgress();
+                            _isInstalling = false;
+                            InstallManager.Instance.InstallAPK(finalApk);
+                        }
                     }
-                    catch (Exception ex) {
-                        Debug.LogError($"File operation error: {ex.Message}");
-                        // Fallback: try to install from extraction path directly if move fails
-                        InstallManager.Instance.InstallAPK(finalApk);
+                    else
+                    {
+                        Debug.LogError("No APK found in the extracted files.");
+                        UIManager.Instance.HideProgress();
+                        _isInstalling = false;
                     }
                 }
                 else
                 {
-                    Debug.LogError("Failed to extract APK.");
+                    Debug.LogError("Failed to extract files.");
+                    UIManager.Instance.HideProgress();
+                    _isInstalling = false;
                 }
             }
         }
@@ -451,6 +485,131 @@ namespace RookieOnQuest
         {
             StopAllCoroutines();
             StartCoroutine(InitializeRoutine());
+        }
+
+        private IEnumerator RequestPermissions()
+        {
+            if (Application.platform != RuntimePlatform.Android) yield break;
+
+            bool needsPermission = false;
+            try
+            {
+                using (var version = new AndroidJavaClass("android.os.Build$VERSION"))
+                {
+                    int sdkInt = version.GetStatic<int>("SDK_INT");
+                    if (sdkInt >= 30) // Android 11 (API 30)
+                    {
+                        using (var environment = new AndroidJavaClass("android.os.Environment"))
+                        {
+                            if (!environment.CallStatic<bool>("isExternalStorageManager"))
+                            {
+                                needsPermission = true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"Error checking permissions: {ex.Message}");
+            }
+
+            if (needsPermission)
+            {
+                Debug.Log("MANAGE_EXTERNAL_STORAGE not granted. Requesting...");
+                UIManager.Instance.ShowProgress("Permission Required\nPlease grant 'All Files Access' to install OBBs.", 0f);
+
+                try
+                {
+                    using (var uriClass = new AndroidJavaClass("android.net.Uri"))
+                    using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+                    using (var currentActivity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
+                    {
+                        string packageName = currentActivity.Call<string>("getPackageName");
+                        AndroidJavaObject uri = uriClass.CallStatic<AndroidJavaObject>("fromParts", "package", packageName, null);
+
+                        using (var intent = new AndroidJavaObject("android.content.Intent", "android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION", uri))
+                        {
+                            currentActivity.Call("startActivity", intent);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"Error launching permission settings: {ex.Message}");
+                }
+
+                // Wait for user to return or timeout
+                float timeout = 60f;
+                bool granted = false;
+                while (!granted && timeout > 0)
+                {
+                    yield return new WaitForSeconds(1.5f);
+                    timeout -= 1.5f;
+
+                    try
+                    {
+                        using (var environment = new AndroidJavaClass("android.os.Environment"))
+                        {
+                            granted = environment.CallStatic<bool>("isExternalStorageManager");
+                        }
+                    }
+                    catch { /* Ignore errors during polling */ }
+                }
+
+                UIManager.Instance.HideProgress();
+            }
+        }
+
+        private void MoveObbFiles(string sourceDir, string packageName)
+        {
+            try
+            {
+                // In a standalone Quest app, we usually target the shared storage
+                string obbBaseRoot = "/storage/emulated/0/Android/obb";
+                
+                // Ensure the base OBB directory exists (it should, but just in case)
+                if (!Directory.Exists(obbBaseRoot))
+                {
+                    Debug.LogWarning("Standard OBB path not found, trying fallback...");
+                    // Try to find it relative to persistentDataPath as a fallback
+                    // persistentDataPath is usually /storage/emulated/0/Android/data/pkg/files
+                    obbBaseRoot = Path.GetFullPath(Path.Combine(Application.persistentDataPath, "../../../obb"));
+                }
+
+                string targetDir = Path.Combine(obbBaseRoot, packageName);
+                if (!Directory.Exists(targetDir))
+                {
+                    Debug.Log($"Creating OBB directory: {targetDir}");
+                    Directory.CreateDirectory(targetDir);
+                }
+
+                string[] obbFiles = Directory.GetFiles(sourceDir, "*.obb", SearchOption.AllDirectories);
+                if (obbFiles.Length == 0)
+                {
+                    Debug.Log("No OBB files found to move.");
+                    return;
+                }
+
+                foreach (var obb in obbFiles)
+                {
+                    string fileName = Path.GetFileName(obb);
+                    string destPath = Path.Combine(targetDir, fileName);
+                    
+                    if (File.Exists(destPath))
+                    {
+                        Debug.Log($"Deleting existing OBB: {fileName}");
+                        File.Delete(destPath);
+                    }
+
+                    Debug.Log($"Moving OBB to: {destPath}");
+                    File.Move(obb, destPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"Error moving OBB: {ex.Message}");
+            }
         }
 
         private string CalculateMD5(string input)
