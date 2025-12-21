@@ -14,7 +14,11 @@ A standalone Meta Quest application to browse, download, and install VR games na
 
 ## Overview
 
-Inspired by the official [VRPirates Rookie Sideloader](https://github.com/VRPirates/rookie), **Rookie On Quest** is built with Unity 6 to provide a modern, high-performance interface for managing your VR library.
+**Rookie On Quest** is a standalone client for the Meta Quest, built with Unity 6. It is important to note that this application is **entirely dependent on the servers and infrastructure maintained by the Rookie/VRPirates team**. It functions as a specialized interface for their services, and its operation relies completely on their continued work and server availability.
+
+## Special Thanks
+
+A huge thank you to the **Rookie developers and the VRPirates community**. Their hard work in maintaining the servers, catalog, and the original sideloader ecosystem is what makes this project possible. This app is a tribute to their dedication to the VR community.
 
 ### Key Features
 - **Zero Configuration**: Open the project and everything (Android settings, dependencies, scenes) is configured automatically.
@@ -45,4 +49,4 @@ Inspired by the official [VRPirates Rookie Sideloader](https://github.com/VRPira
 4. Launch the app from the **Unknown Sources** section of your library.
 
 ---
-*Note: This project is independent and relies on the public mirror infrastructure provided by the VRPirates community.*
+*Disclaimer: This project is an unofficial client and is not affiliated with the official Rookie/VRPirates team.*
