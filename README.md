@@ -1,7 +1,7 @@
 # Rookie On Quest
 
 <p align="center">
-  <img src="RookieOnQuest/Assets/Icons/app_icon.png" width="256" alt="Rookie On Quest Icon">
+  <img src="app/src/main/res/drawable/app_icon.png" width="256" alt="Rookie On Quest Icon">
   <br>
   <img src="https://img.shields.io/github/v/release/LeGeRyChEeSe/rookie-on-quest?style=for-the-badge&color=orange" alt="Latest Release">
   <img src="https://img.shields.io/github/stars/LeGeRyChEeSe/rookie-on-quest?style=for-the-badge&color=2ea44f" alt="Stars">
@@ -30,20 +30,20 @@ A standalone Meta Quest application to browse, download, and install VR games na
 
 ## Overview
 
-**Rookie On Quest** is a standalone client for the Meta Quest, built with Unity 6. It is important to note that this application is **entirely dependent on the servers and infrastructure maintained by the Rookie/VRPirates team**. It functions as a specialized interface for their services, and its operation relies completely on their continued work and server availability.
+**Rookie On Quest** is a standalone client for the Meta Quest, built natively with **Kotlin** and **Jetpack Compose**. It is important to note that this application is **entirely dependent on the servers and infrastructure maintained by the Rookie/VRPirates team**. It functions as a specialized interface for their services, and its operation relies completely on their continued work and server availability.
 
 ## Special Thanks
 
 A huge thank you to the **Rookie developers and the VRPirates community**. Their hard work in maintaining the servers, catalog, and the original sideloader ecosystem is what makes this project possible. This app is a tribute to their dedication to the VR community.
 
 ### Key Features
-- **Standalone Sideloading**: Install games directly on your Meta Quest without needing a PC.
+- **Standalone Sideloading**: Install games (APK + OBB) directly on your Meta Quest without needing a PC.
 - **Full Catalog Access**: Browse and search through the complete VRPirates library natively.
 - **Optimized Performance**: Smooth and fast navigation through 2400+ game entries.
 - **Zero Setup**: Open the app and start browsing immediately with no configuration required.
 
 > [!TIP]
-> **Performance Note**: Upon the first launch or after an update, the application extracts over 2400 icons in the background. An icon toggle is available in the settings if you prefer maximum performance.
+> **Performance Note**: Upon the first launch or after an update, the application extracts icons in the background.
 
 ---
 
@@ -79,13 +79,14 @@ adb install RookieOnQuest.apk
 ## Build from Source
 
 ### Prerequisites
-- **Unity 6** (Version 6000.3.2f1 or newer recommended).
-- **Android Build Support** installed via Unity Hub.
+- **Android Studio** (Ladybug or newer).
+- **Android SDK 34** (API 34).
 
 ### Steps
-1. Open the `RookieOnQuest` folder in Unity Hub.
-2. Wait for the automatic configuration to complete (check the Console for logs).
-3. Go to `File > Build Settings` and click **Build**.
+1. Clone this repository.
+2. Open the project in **Android Studio**.
+3. Wait for Gradle to sync and download dependencies.
+4. Go to `Build > Build Bundle(s) / APK(s) > Build APK(s)` or run `./gradlew assembleDebug`.
 
 ---
 
