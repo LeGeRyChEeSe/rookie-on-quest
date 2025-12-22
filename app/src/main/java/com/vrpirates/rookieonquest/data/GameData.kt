@@ -1,0 +1,8 @@
+package com.vrpirates.rookieonquest.data
+
+data class GameData(
+    val gameName: String,
+    val packageName: String,
+    val versionCode: String,
+    val releaseName: String
+)

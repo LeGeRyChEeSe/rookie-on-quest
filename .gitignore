@@ -1,20 +1,22 @@
-# Unity folders
-RookieOnQuest/Library/
-RookieOnQuest/Temp/
-RookieOnQuest/Obj/
-RookieOnQuest/Logs/
-RookieOnQuest/UserSettings/
-RookieOnQuest/Builds/
-RookieOnQuest/.utmp/
+# Android Gradle / IDEA
+.gradle/
+.idea/
+build/
+app/build/
+release/
+local.properties
+.DS_Store
+
+# Android specific
+*.apk
+*.ap_
+*.dex
+*.class
+bin/
+gen/
 
 # OS files
-.DS_Store
 Thumbs.db
 
 # User specific
-*.csproj
-*.sln
 *.user
-*.userprefs
-
-rookie/
