@@ -2,6 +2,7 @@ package com.vrpirates.rookieonquest.data
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -163,7 +164,10 @@ class MainRepository(private val context: Context) {
             val html = response.body?.string() ?: ""
             val matcher = Pattern.compile("href\\s*=\\s*\"([^\"]+\\.(7z\\.\\d{3}|apk))\"", Pattern.CASE_INSENSITIVE).matcher(html)
             while (matcher.find()) {
-                segments.add(matcher.group(1))
+                val group = matcher.group(1)
+                if (group != null) {
+                    segments.add(group)
+                }
             }
         }
         
@@ -270,6 +274,21 @@ class MainRepository(private val context: Context) {
             if (tempInstallFolder.exists()) {
                 tempInstallFolder.deleteRecursively()
             }
+        }
+    }
+
+    suspend fun getInstalledPackagesMap(): Map<String, Long> = withContext(Dispatchers.IO) {
+        try {
+            val pm = context.packageManager
+            val packages = pm.getInstalledPackages(0)
+            packages.associate { 
+                @Suppress("DEPRECATION")
+                val vCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) it.longVersionCode else it.versionCode.toLong()
+                it.packageName to vCode
+            }
+        } catch (e: Exception) {
+            Log.e("MainRepository", "Error getting installed packages", e)
+            emptyMap()
         }
     }
 

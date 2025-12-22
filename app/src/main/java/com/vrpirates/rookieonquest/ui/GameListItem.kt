@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -14,25 +16,50 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import java.io.File
 
+enum class InstallStatus {
+    NOT_INSTALLED,
+    INSTALLED,
+    UPDATE_AVAILABLE
+}
+
 @Immutable
 data class GameItemState(
     val name: String,
     val version: String,
+    val installedVersion: String? = null,
     val packageName: String,
-    val iconFile: File?
+    val releaseName: String,
+    val iconFile: File?,
+    val installStatus: InstallStatus = InstallStatus.NOT_INSTALLED
 )
 
 @Composable
 fun GameListItem(
     game: GameItemState,
-    onInstallClick: () -> Unit
+    onInstallClick: () -> Unit,
+    onUninstallClick: () -> Unit
 ) {
+    val buttonColor = when (game.installStatus) {
+        InstallStatus.NOT_INSTALLED -> Color.Transparent
+        InstallStatus.INSTALLED -> Color(0xFF3498db) // Blue
+        InstallStatus.UPDATE_AVAILABLE -> Color(0xFF2ecc71) // Green
+    }
+    
+    val buttonText = when (game.installStatus) {
+        InstallStatus.UPDATE_AVAILABLE -> "UPDATE"
+        InstallStatus.INSTALLED -> "INSTALLED"
+        else -> "INSTALL"
+    }
+    
+    val isEnabled = game.installStatus != InstallStatus.INSTALLED
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -80,12 +107,29 @@ fun GameListItem(
                 
                 Spacer(modifier = Modifier.height(4.dp))
                 
-                Text(
-                    text = "v${game.version}", 
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF3498db),
-                    fontWeight = FontWeight.Medium
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (game.installStatus == InstallStatus.UPDATE_AVAILABLE && game.installedVersion != null) {
+                        Text(
+                            text = "v${game.installedVersion}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                            textDecoration = TextDecoration.LineThrough,
+                            fontWeight = FontWeight.Normal
+                        )
+                        Text(
+                            text = " → ",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        text = "v${game.version}", 
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (game.installStatus == InstallStatus.UPDATE_AVAILABLE) Color(0xFF2ecc71) else Color(0xFF3498db),
+                        fontWeight = FontWeight.Medium
+                    )
+                }
                 
                 Spacer(modifier = Modifier.height(2.dp))
                 
@@ -99,23 +143,42 @@ fun GameListItem(
                 )
             }
             
-            Button(
-                onClick = onInstallClick,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.Transparent,
-                    contentColor = Color.White
-                ),
-                shape = RoundedCornerShape(4.dp),
-                border = BorderStroke(1.dp, Color.Gray),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                modifier = Modifier.height(36.dp)
-            ) {
-                Text(
-                    "INSTALL", 
-                    fontSize = 11.sp, 
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (game.installStatus == InstallStatus.INSTALLED || game.installStatus == InstallStatus.UPDATE_AVAILABLE) {
+                    IconButton(
+                        onClick = onUninstallClick,
+                        modifier = Modifier.size(36.dp).padding(end = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Uninstall",
+                            tint = Color(0xFFCF6679),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+                
+                Button(
+                    onClick = onInstallClick,
+                    enabled = isEnabled,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = buttonColor,
+                        contentColor = Color.White,
+                        disabledContainerColor = buttonColor,
+                        disabledContentColor = Color.White.copy(alpha = 0.7f)
+                    ),
+                    shape = RoundedCornerShape(4.dp),
+                    border = if (game.installStatus == InstallStatus.NOT_INSTALLED) BorderStroke(1.dp, Color.Gray) else null,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    modifier = Modifier.height(36.dp)
+                ) {
+                    Text(
+                        buttonText, 
+                        fontSize = 10.sp, 
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.5.sp
+                    )
+                }
             }
         }
     }

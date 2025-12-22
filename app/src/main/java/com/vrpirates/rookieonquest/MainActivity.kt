@@ -1,5 +1,7 @@
 package com.vrpirates.rookieonquest
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -23,15 +25,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vrpirates.rookieonquest.ui.GameListItem
+import com.vrpirates.rookieonquest.ui.MainEvent
 import com.vrpirates.rookieonquest.ui.MainViewModel
 import com.vrpirates.rookieonquest.ui.theme.RookieOnQuestTheme
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -62,6 +68,48 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+
+    // Handle events from ViewModel (like Uninstall)
+    LaunchedEffect(Unit) {
+        viewModel.events.collectLatest { event ->
+            when (event) {
+                is MainEvent.Uninstall -> {
+                    try {
+                        val intent = Intent(Intent.ACTION_DELETE).apply {
+                            data = Uri.fromParts("package", event.packageName, null)
+                            // DO NOT use NEW_TASK when calling from Activity context
+                        }
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        snackbarHostState.showSnackbar("Failed to uninstall: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    // Show errors in a snackbar
+    LaunchedEffect(error) {
+        error?.let {
+            snackbarHostState.showSnackbar(it)
+        }
+    }
+
+    // Refresh data when returning to the app (e.g. after uninstall/install)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshData()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     val alphabetInfo = remember(games) {
         val chars = mutableSetOf<Char>()
@@ -82,6 +130,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             Column(modifier = Modifier.background(Color(0xFF0F0F0F))) {
                 TopAppBar(
@@ -203,11 +252,12 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxHeight()) {
                             items(
                                 items = games,
-                                key = { it.packageName }
+                                key = { it.releaseName }
                             ) { game ->
                                 GameListItem(
                                     game = game,
-                                    onInstallClick = { if (!isInstalling) viewModel.installGame(game.packageName) }
+                                    onInstallClick = { if (!isInstalling) viewModel.installGame(game.packageName) },
+                                    onUninstallClick = { viewModel.uninstallGame(game.packageName) }
                                 )
                             }
                         }
