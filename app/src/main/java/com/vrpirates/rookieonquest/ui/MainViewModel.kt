@@ -1,39 +1,62 @@
 package com.vrpirates.rookieonquest.ui
 
 import android.app.Application
+import android.content.Context
+import android.os.Build
+import android.os.Environment
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.vrpirates.rookieonquest.data.GameData
 import com.vrpirates.rookieonquest.data.MainRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 sealed class MainEvent {
     data class Uninstall(val packageName: String) : MainEvent()
+    data class InstallApk(val apkFile: File) : MainEvent()
+    object RequestInstallPermission : MainEvent()
+    object RequestStoragePermission : MainEvent()
+}
+
+enum class RequiredPermission {
+    INSTALL_UNKNOWN_APPS,
+    MANAGE_EXTERNAL_STORAGE
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+    private val TAG = "MainViewModel"
     private val repository = MainRepository(application)
     
     private val _rawGames = MutableStateFlow<List<GameData>>(emptyList())
-    
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery
 
     private val _events = MutableSharedFlow<MainEvent>()
     val events = _events.asSharedFlow()
 
-    // Cache current package versions to avoid repeated PM calls during list mapping
     private val _installedPackages = MutableStateFlow<Map<String, Long>>(emptyMap())
+
+    private val _missingPermissions = MutableStateFlow<List<RequiredPermission>?>(null)
+    val missingPermissions: StateFlow<List<RequiredPermission>?> = _missingPermissions
+
+    private var isPermissionFlowActive = false
+    private var previousMissingCount = 0
+    private var refreshJob: Job? = null
+    private var installJob: Job? = null
 
     val games: StateFlow<List<GameItemState>> = combine(_rawGames, _searchQuery, _installedPackages) { list, query, installed ->
         val filtered = if (query.isBlank()) {
@@ -68,7 +91,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 installStatus = status
             )
         }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    }
+    .flowOn(Dispatchers.Default)
+    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val alphabetInfo: StateFlow<Pair<List<Char>, Map<Char, Int>>> = games
+        .map { list ->
+            val chars = mutableSetOf<Char>()
+            val charToIndex = mutableMapOf<Char, Int>()
+            list.forEachIndexed { index, game ->
+                val firstChar = game.name.firstOrNull()?.uppercaseChar() ?: '_'
+                if (!charToIndex.containsKey(firstChar)) {
+                    chars.add(firstChar)
+                    charToIndex[firstChar] = index
+                }
+            }
+            val sortedList = chars.sorted().toMutableList()
+            if (sortedList.contains('_')) {
+                sortedList.remove('_')
+                sortedList.add(0, '_')
+            }
+            sortedList to charToIndex
+        }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList<Char>() to emptyMap<Char, Int>())
 
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing
@@ -81,47 +127,126 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     private val _progressMessage = MutableStateFlow<String?>(null)
     val progressMessage: StateFlow<String?> = _progressMessage
-    
-    private var installJob: Job? = null
 
     init {
-        refreshData()
+        checkPermissions()
     }
 
     fun refreshData() {
-        viewModelScope.launch {
+        if (refreshJob?.isActive == true) return
+
+        refreshJob = viewModelScope.launch {
+            val context = getApplication<Application>()
+            val missing = withContext(Dispatchers.Default) { getMissingPermissionsList(context) }
+            _missingPermissions.value = missing
+            
+            if (missing.isNotEmpty()) return@launch
+
             _isRefreshing.value = true
             _error.value = null
             try {
-                // Refresh installed packages list once on a background thread
-                _installedPackages.value = repository.getInstalledPackagesMap()
-                
-                val config = repository.fetchConfig()
-                val gameList = repository.downloadCatalog(config.baseUri)
-                _rawGames.value = gameList
+                withContext(Dispatchers.IO) {
+                    val installed = repository.getInstalledPackagesMap()
+                    _installedPackages.value = installed
+                    val config = repository.fetchConfig()
+                    val gameList = repository.downloadCatalog(config.baseUri)
+                    _rawGames.value = gameList
+                }
             } catch (e: Exception) {
+                Log.e(TAG, "Refresh error", e)
                 _error.value = "Error: ${e.message}"
             } finally {
                 _isRefreshing.value = false
             }
         }
     }
+
+    fun checkPermissions() {
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            val missing = withContext(Dispatchers.Default) { getMissingPermissionsList(context) }
+            
+            val newCount = missing.size
+            if (isPermissionFlowActive) {
+                if (newCount < previousMissingCount && newCount > 0) {
+                    _missingPermissions.value = missing
+                    previousMissingCount = newCount
+                    requestNextPermission()
+                    return@launch
+                } else if (newCount == 0) {
+                    isPermissionFlowActive = false
+                    _missingPermissions.value = emptyList()
+                    refreshData() 
+                    return@launch
+                } else if (newCount == previousMissingCount) {
+                    isPermissionFlowActive = false
+                }
+            }
+
+            _missingPermissions.value = missing
+            previousMissingCount = newCount
+            
+            if (newCount == 0 && _rawGames.value.isEmpty()) {
+                refreshData()
+            }
+        }
+    }
+
+    private fun getMissingPermissionsList(context: Context): List<RequiredPermission> {
+        val missing = mutableListOf<RequiredPermission>()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!context.packageManager.canRequestPackageInstalls()) {
+                    missing.add(RequiredPermission.INSTALL_UNKNOWN_APPS)
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (!Environment.isExternalStorageManager()) {
+                    missing.add(RequiredPermission.MANAGE_EXTERNAL_STORAGE)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking permissions", e)
+        }
+        return missing
+    }
     
     fun setSearchQuery(query: String) {
         _searchQuery.value = query
     }
 
+    fun startPermissionFlow() {
+        isPermissionFlowActive = true
+        requestNextPermission()
+    }
+
+    fun requestNextPermission() {
+        val next = _missingPermissions.value?.firstOrNull() ?: return
+        viewModelScope.launch {
+            when (next) {
+                RequiredPermission.INSTALL_UNKNOWN_APPS -> _events.emit(MainEvent.RequestInstallPermission)
+                RequiredPermission.MANAGE_EXTERNAL_STORAGE -> _events.emit(MainEvent.RequestStoragePermission)
+            }
+        }
+    }
+
     fun installGame(packageName: String) {
+        if (_missingPermissions.value?.isNotEmpty() == true) {
+            startPermissionFlow()
+            return
+        }
+
         val game = _rawGames.value.find { it.packageName == packageName } ?: return
         installJob?.cancel()
         installJob = viewModelScope.launch {
             try {
                 _isInstalling.value = true
-                repository.installGame(game) { message, progress ->
+                val apkFile = repository.installGame(game) { message, progress, current, total ->
                     _progressMessage.value = "$message (${(progress * 100).toInt()}%)"
                 }
-                // Update UI state after installation
-                refreshData()
+                if (apkFile != null) {
+                    _events.emit(MainEvent.InstallApk(apkFile))
+                }
             } catch (e: Exception) {
                 if (e !is kotlinx.coroutines.CancellationException) {
                     _error.value = "Installation error: ${e.message}"

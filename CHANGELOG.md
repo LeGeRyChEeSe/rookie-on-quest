@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1] - 2025-12-27
+
+### Added
+- **Permissions Management:** New guided flow for granting necessary permissions (Install Unknown Apps, Manage External Storage).
+- **Resume Capability:** Downloads can now resume if interrupted.
+
+### Changed
+- **Performance:** Significant improvements to UI responsiveness and catalog loading. Heavy calculations moved off the main thread.
+- **Installation Logic:** More robust APK and OBB installation process.
+- **UI Modularization:** Cleaner code structure for UI components.
+
+### Fixed
+- **Typography:** Fixed potential font resolution freezes.
+
 ## [2.0.0] - 2025-12-22
 
 ### Changed
