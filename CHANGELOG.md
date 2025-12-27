@@ -21,10 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Better Battery Life:** The app now pauses background tasks when you're not using it to save resources.
 - **Easier Setup:** A simple guide helps you set up permissions on the first run.
 - **Smarter Sorting:** Games are organized better, making them easier to find.
+- **Visual Refresh:** Updated launcher icon and background colors for a better look.
 
 ### 🔧 Fixes
 - **Interaction Lock:** Prevents clicking buttons while an app update is pending to avoid conflicts.
-- **Installation:** Made game installations more reliable (especially for large games).
+- **Installation:** Made game installations more reliable (especially for large games) and added checks for app visibility before launching installers.
+- **Package Refresh:** Improved the detection of installed packages on startup.
+- **Update Flow:** Allowed manual refresh and permission checks during the update process.
 - **General:** Various small bug fixes and performance tweaks.
 
 ## [2.0.0] - 2025-12-22
