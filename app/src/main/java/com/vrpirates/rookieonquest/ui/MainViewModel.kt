@@ -381,7 +381,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshData() {
         if (refreshJob?.isActive == true) return
-        if (_isUpdateCheckInProgress.value || _isUpdateDialogShowing.value || _isUpdateDownloading.value) return
+        if (_isUpdateDialogShowing.value || _isUpdateDownloading.value) return
 
         refreshJob = viewModelScope.launch {
             val context = getApplication<Application>()
@@ -410,7 +410,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     
     fun checkPermissions() {
-        if (_isUpdateCheckInProgress.value || _isUpdateDialogShowing.value || _isUpdateDownloading.value) return
+        if (_isUpdateDialogShowing.value || _isUpdateDownloading.value) return
 
         viewModelScope.launch {
             val context = getApplication<Application>()
