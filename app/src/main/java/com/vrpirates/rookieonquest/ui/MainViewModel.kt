@@ -63,6 +63,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _visibleIndices = MutableStateFlow<List<Int>>(emptyList())
     private val priorityUpdateChannel = Channel<Unit>(Channel.CONFLATED)
 
+    private val _isUpdateCheckInProgress = MutableStateFlow(true)
+    val isUpdateCheckInProgress: StateFlow<Boolean> = _isUpdateCheckInProgress
+
     private val _isUpdateDialogShowing = MutableStateFlow(false)
     val isUpdateDialogShowing: StateFlow<Boolean> = _isUpdateDialogShowing
 
@@ -186,10 +189,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         // Only start heavy work AFTER update check
         viewModelScope.launch {
-            val updateAvailable = checkForAppUpdates()
-            if (!updateAvailable) {
-                checkPermissions()
-                startSizeFetchLoop()
+            _isUpdateCheckInProgress.value = true
+            try {
+                val updateAvailable = checkForAppUpdates()
+                if (!updateAvailable) {
+                    checkPermissions()
+                    startSizeFetchLoop()
+                }
+            } finally {
+                _isUpdateCheckInProgress.value = false
             }
         }
     }
@@ -373,6 +381,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshData() {
         if (refreshJob?.isActive == true) return
+        if (_isUpdateCheckInProgress.value || _isUpdateDialogShowing.value || _isUpdateDownloading.value) return
 
         refreshJob = viewModelScope.launch {
             val context = getApplication<Application>()
@@ -401,6 +410,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     
     fun checkPermissions() {
+        if (_isUpdateCheckInProgress.value || _isUpdateDialogShowing.value || _isUpdateDownloading.value) return
+
         viewModelScope.launch {
             val context = getApplication<Application>()
             val missing = withContext(Dispatchers.Default) { getMissingPermissionsList(context) }

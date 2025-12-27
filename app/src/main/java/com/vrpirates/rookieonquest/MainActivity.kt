@@ -83,6 +83,8 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val alphabetInfo by viewModel.alphabetInfo.collectAsState()
     val keepApks by viewModel.keepApks.collectAsState()
     
+    val isUpdateCheckInProgress by viewModel.isUpdateCheckInProgress.collectAsState()
+    val isUpdateDialogShowing by viewModel.isUpdateDialogShowing.collectAsState()
     val isUpdateDownloading by viewModel.isUpdateDownloading.collectAsState()
     val updateProgress by viewModel.updateProgress.collectAsState()
     
@@ -91,7 +93,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     
-    var showUpdateDialog by remember { mutableStateOf<com.vrpirates.rookieonquest.network.GitHubRelease?>(null) }
+    var showUpdateDialogState by remember { mutableStateOf<com.vrpirates.rookieonquest.network.GitHubRelease?>(null) }
     var showSettingsDialog by remember { mutableStateOf(false) }
 
     // Update visible indices for priority fetching
@@ -153,7 +155,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                     }
                 }
                 is MainEvent.ShowUpdatePopup -> {
-                    showUpdateDialog = event.release
+                    showUpdateDialogState = event.release
                 }
             }
         }
@@ -187,10 +189,11 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         }
     }
 
-    if (showUpdateDialog != null) {
+    val release = showUpdateDialogState
+    if (release != null) {
         AlertDialog(
             onDismissRequest = { 
-                showUpdateDialog = null 
+                showUpdateDialogState = null 
                 viewModel.onUpdateDialogDismissed()
             },
             title = { Text("New Version Available!") },
@@ -202,7 +205,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         .verticalScroll(rememberScrollState())
                 ) {
                     Text(
-                        text = "A new version (${showUpdateDialog!!.tagName}) is available.",
+                        text = "A new version (${release.tagName}) is available.",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
@@ -216,7 +219,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = parseMarkdown(showUpdateDialog!!.body),
+                        text = parseMarkdown(release.body),
                         style = MaterialTheme.typography.bodyMedium.copy(
                             lineHeight = 20.sp,
                             letterSpacing = 0.25.sp
@@ -227,8 +230,8 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.downloadAndInstallUpdate(showUpdateDialog!!)
-                        showUpdateDialog = null
+                        viewModel.downloadAndInstallUpdate(release)
+                        showUpdateDialogState = null
                     },
                     shape = RoundedCornerShape(8.dp)
                 ) {
@@ -237,7 +240,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             },
             dismissButton = {
                 TextButton(onClick = { 
-                    showUpdateDialog = null 
+                    showUpdateDialogState = null 
                     viewModel.onUpdateDialogDismissed()
                 }) {
                     Text("LATER", color = Color.Gray)
@@ -292,12 +295,12 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         }
                         IconButton(
                             onClick = { if (!isInstalling && missingPermissions?.isEmpty() == true) viewModel.refreshData() },
-                            enabled = !isInstalling && missingPermissions?.isEmpty() == true
+                            enabled = !isInstalling && missingPermissions?.isEmpty() == true && !isUpdateDialogShowing && !isUpdateDownloading
                         ) {
                             Icon(
                                 Icons.Default.Refresh, 
                                 contentDescription = "Refresh", 
-                                tint = if (isInstalling || missingPermissions?.isNotEmpty() == true) Color.DarkGray else Color.White
+                                tint = if (isInstalling || missingPermissions?.isNotEmpty() == true || isUpdateDialogShowing || isUpdateDownloading) Color.DarkGray else Color.White
                             )
                         }
                     },
@@ -312,7 +315,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                     placeholder = { Text("Search games...", color = Color.Gray) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray) },
                     singleLine = true,
-                    enabled = !isInstalling && missingPermissions?.isEmpty() == true,
+                    enabled = !isInstalling && missingPermissions?.isEmpty() == true && !isUpdateDialogShowing && !isUpdateDownloading,
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color(0xFF0A0A0A),
                         unfocusedContainerColor = Color(0xFF0A0A0A),
@@ -330,6 +333,22 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     ) { innerPadding ->
         Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
             when {
+                isUpdateCheckInProgress -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        LoadingScreen("Checking for app updates...")
+                    }
+                }
+                isUpdateDialogShowing -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        LoadingScreen("Update available!")
+                    }
+                }
+                isUpdateDownloading -> {
+                    InstallationOverlay(
+                        progressMessage = updateProgress,
+                        onCancel = { /* Locked during update */ }
+                    )
+                }
                 missingPermissions == null -> {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         LoadingScreen("Checking permissions...")
@@ -363,7 +382,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                 LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxHeight()) {
                                     items(
                                         items = games,
-                                        key = { it.packageName + it.releaseName }, // Fix: Ensure unique key
+                                        key = { it.packageName + it.releaseName },
                                         contentType = { "game_item" }
                                     ) { game ->
                                         GameListItem(
@@ -383,19 +402,12 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                 onCancel = { viewModel.cancelInstall() }
                             )
                         }
-                        
-                        if (isUpdateDownloading) {
-                            InstallationOverlay(
-                                progressMessage = updateProgress,
-                                onCancel = { /* Can't really cancel app update easily here */ }
-                            )
-                        }
 
                         if (isRefreshing && games.isNotEmpty()) {
                             Surface(modifier = Modifier.fillMaxSize(), color = Color.Black.copy(alpha = 0.7f)) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                                     CircularProgressIndicator(color = Color(0xFF3498db))
-                                    Text(text = "Checking for updates...", modifier = Modifier.padding(top = 16.dp), color = Color.White)
+                                    Text(text = "Syncing catalog...", modifier = Modifier.padding(top = 16.dp), color = Color.White)
                                 }
                             }
                         }
@@ -417,7 +429,7 @@ fun LoadingScreen(message: String) {
 @Composable
 fun ErrorScreen(message: String, onRetry: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(text = message, color = Color.Red)
+        Text(text = message, color = Color.Red, textAlign = TextAlign.Center)
         Button(onClick = onRetry, modifier = Modifier.padding(top = 16.dp)) {
             Text("Retry")
         }
@@ -596,7 +608,10 @@ fun PermissionItem(permission: RequiredPermission) {
  * A robust markdown-ish parser for GitHub release bodies.
  */
 fun parseMarkdown(text: String) = buildAnnotatedString {
-    val lines = text.split(Regex("\\r?\\n"))
+    // Remove BOM or zero-width characters at start
+    val cleanText = text.replace(Regex("""^[\uFEFF\u200B\u200C\u200D\u200E\u200F]+"""), "").trim()
+    val lines = cleanText.split(Regex("\\r?\\n"))
+    
     lines.forEach { line ->
         val trimmed = line.trim()
         if (trimmed.isEmpty()) {
@@ -604,10 +619,11 @@ fun parseMarkdown(text: String) = buildAnnotatedString {
             return@forEach
         }
         
-        // Handle Headers (starting with one or more #)
-        val headerMatch = Regex("^#+\\s*(.*)$").find(trimmed)
+        // Match headers: ANY line starting with one or more #
+        val headerMatch = Regex("""^#+\s*(.*)$""").find(trimmed)
         if (headerMatch != null) {
-            val title = headerMatch.groupValues[1]
+            // Remove markdown bold marks from title if any
+            val title = headerMatch.groupValues[1].replace("*", "").trim()
             withStyle(style = SpanStyle(
                 fontWeight = FontWeight.ExtraBold, 
                 fontSize = 18.sp, 
@@ -615,15 +631,15 @@ fun parseMarkdown(text: String) = buildAnnotatedString {
             )) {
                 append(title)
             }
-            append("\n\n") // Extra space after title
+            append("\n\n") 
             return@forEach
         }
         
-        // Handle Bullet points
+        // Handle Bullet points (supporting more chars)
         var content = trimmed
-        if (trimmed.startsWith("-") || trimmed.startsWith("*")) {
+        if (trimmed.startsWith("-") || trimmed.startsWith("*") || trimmed.startsWith("·") || trimmed.startsWith("•")) {
             append("  • ")
-            content = trimmed.substring(1).trim()
+            content = trimmed.replace(Regex("^[-*·•]\\s*"), "")
         }
 
         // Handle Bold (**text**)

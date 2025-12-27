@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Resume Downloads:** If your internet cuts out, downloads now pick up right where they left off.
 
 ### 🚀 Improvements
+- **Clearer Status:** Changed "Checking for updates" to "Syncing catalog" so you know when it's just refreshing the game list.
 - **Background Installation:** Game installations now continue even if you leave the app.
 - **Faster Startup:** The app loads much faster and feels smoother to use.
 - **Better Battery Life:** The app now pauses background tasks when you're not using it to save resources.
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Smarter Sorting:** Games are organized better, making them easier to find.
 
 ### 🔧 Fixes
+- **Interaction Lock:** Prevents clicking buttons while an app update is pending to avoid conflicts.
 - **Installation:** Made game installations more reliable (especially for large games).
 - **General:** Various small bug fixes and performance tweaks.
 
