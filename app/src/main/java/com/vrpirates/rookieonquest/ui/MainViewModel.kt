@@ -194,10 +194,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val updateAvailable = checkForAppUpdates()
                 if (!updateAvailable) {
                     checkPermissions()
+                    refreshInstalledPackages() // Initial scan
                     startSizeFetchLoop()
                 }
             } finally {
                 _isUpdateCheckInProgress.value = false
+            }
+        }
+    }
+
+    fun refreshInstalledPackages() {
+        viewModelScope.launch {
+            try {
+                val installed = withContext(Dispatchers.IO) {
+                    repository.getInstalledPackagesMap()
+                }
+                _installedPackages.value = installed
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to refresh installed packages", e)
             }
         }
     }
@@ -298,6 +312,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_isUpdateDownloading.value) return
         _isUpdateDialogShowing.value = false
         checkPermissions()
+        refreshInstalledPackages()
         startSizeFetchLoop()
     }
 
@@ -313,6 +328,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _isAppVisible.value = visible
             if (visible) {
                 priorityUpdateChannel.trySend(Unit)
+                refreshInstalledPackages() // Refresh when coming back to app
             }
         }
     }
