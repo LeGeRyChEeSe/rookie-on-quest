@@ -278,6 +278,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 
                 _updateProgress.value = "Launching installer..."
                 withContext(Dispatchers.Main) {
+                    if (!_isAppVisible.value) {
+                        _updateProgress.value = "Update ready. Please return to the app."
+                        _isAppVisible.first { it }
+                    }
                     _events.emit(MainEvent.InstallApk(targetFile))
                     _isUpdateDownloading.value = false
                 }
@@ -502,6 +506,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _progressMessage.value = "$message (${(progress * 100).toInt()}%)"
                 }
                 if (apkFile != null && !downloadOnly) {
+                    if (!_isAppVisible.value) {
+                        _progressMessage.value = "Ready to install. Please return to the app."
+                        _isAppVisible.first { it }
+                    }
                     _events.emit(MainEvent.InstallApk(apkFile))
                 }
             } catch (e: Exception) {
