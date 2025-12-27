@@ -11,19 +11,15 @@ import com.vrpirates.rookieonquest.data.GameData
 import com.vrpirates.rookieonquest.data.MainRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.onTimeout
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.time.Duration.Companion.milliseconds
 
 sealed class MainEvent {
     data class Uninstall(val packageName: String) : MainEvent()
@@ -41,7 +37,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val TAG = "MainViewModel"
     private val repository = MainRepository(application)
     
-    private val _rawGames = MutableStateFlow<List<GameData>>(emptyList())
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery
 
@@ -53,12 +48,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _missingPermissions = MutableStateFlow<List<RequiredPermission>?>(null)
     val missingPermissions: StateFlow<List<RequiredPermission>?> = _missingPermissions
 
+    private val _visibleIndices = MutableStateFlow<List<Int>>(emptyList())
+    private val priorityUpdateChannel = Channel<Unit>(Channel.CONFLATED)
+
     private var isPermissionFlowActive = false
     private var previousMissingCount = 0
     private var refreshJob: Job? = null
+    private var sizeFetchJob: Job? = null
     private var installJob: Job? = null
 
-    val games: StateFlow<List<GameItemState>> = combine(_rawGames, _searchQuery, _installedPackages) { list, query, installed ->
+    // Get games directly from Room
+    private val _allGames = repository.getAllGamesFlow()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val games: StateFlow<List<GameItemState>> = combine(
+        _allGames, 
+        _searchQuery, 
+        _installedPackages
+    ) { list, query, installed ->
         val filtered = if (query.isBlank()) {
             list
         } else {
@@ -88,7 +95,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 packageName = game.packageName,
                 releaseName = game.releaseName,
                 iconFile = if (iconFile.exists()) iconFile else if (fallbackIcon.exists()) fallbackIcon else null,
-                installStatus = status
+                installStatus = status,
+                size = game.sizeBytes?.let { formatSize(it) }
             )
         }
     }
@@ -130,6 +138,71 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         checkPermissions()
+        startSizeFetchLoop()
+    }
+
+    fun setVisibleIndices(indices: List<Int>) {
+        if (_visibleIndices.value != indices) {
+            _visibleIndices.value = indices
+            priorityUpdateChannel.trySend(Unit)
+        }
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun startSizeFetchLoop() {
+        sizeFetchJob = viewModelScope.launch(Dispatchers.Default) {
+            while (true) {
+                val currentGames = _allGames.value
+                val currentSearch = _searchQuery.value
+                if (currentGames.isEmpty()) {
+                    priorityUpdateChannel.receive()
+                    continue
+                }
+
+                val needsSize = currentGames.filter { it.sizeBytes == null }
+                if (needsSize.isEmpty()) {
+                    priorityUpdateChannel.receive()
+                    continue
+                }
+
+                val visible = _visibleIndices.value
+                val filteredGames = games.value
+                
+                val prioritizedPackages = visible.mapNotNull { index ->
+                    filteredGames.getOrNull(index)?.packageName
+                }.toSet()
+
+                val searchResultPackages = if (currentSearch.isNotEmpty()) {
+                    filteredGames.map { it.packageName }.toSet()
+                } else null
+
+                val candidates = if (searchResultPackages != null) {
+                    needsSize.filter { searchResultPackages.contains(it.packageName) }
+                } else {
+                    needsSize
+                }
+
+                val target = candidates.find { prioritizedPackages.contains(it.packageName) }
+                    ?: candidates.firstOrNull()
+                    ?: if (currentSearch.isEmpty()) needsSize.firstOrNull() else null
+
+                if (target != null) {
+                    try {
+                        Log.d(TAG, "Fetching size for ${target.gameName}")
+                        repository.getGameRemoteInfo(target)
+                        // DB update will trigger _allGames flow update
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error fetching size for ${target.gameName}", e)
+                        delay(2000)
+                    }
+                }
+
+                select<Unit> {
+                    priorityUpdateChannel.onReceive { }
+                    onTimeout(100.milliseconds) { }
+                }
+            }
+        }
     }
 
     fun refreshData() {
@@ -149,9 +222,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val installed = repository.getInstalledPackagesMap()
                     _installedPackages.value = installed
                     val config = repository.fetchConfig()
-                    val gameList = repository.downloadCatalog(config.baseUri)
-                    _rawGames.value = gameList
+                    repository.syncCatalog(config.baseUri)
                 }
+                priorityUpdateChannel.trySend(Unit)
             } catch (e: Exception) {
                 Log.e(TAG, "Refresh error", e)
                 _error.value = "Error: ${e.message}"
@@ -160,7 +233,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
-
+    
     fun checkPermissions() {
         viewModelScope.launch {
             val context = getApplication<Application>()
@@ -186,7 +259,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _missingPermissions.value = missing
             previousMissingCount = newCount
             
-            if (newCount == 0 && _rawGames.value.isEmpty()) {
+            if (newCount == 0 && _allGames.value.isEmpty()) {
                 refreshData()
             }
         }
@@ -213,6 +286,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     fun setSearchQuery(query: String) {
         _searchQuery.value = query
+        priorityUpdateChannel.trySend(Unit)
     }
 
     fun startPermissionFlow() {
@@ -236,12 +310,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val game = _rawGames.value.find { it.packageName == packageName } ?: return
+        val game = _allGames.value.find { it.packageName == packageName } ?: return
         installJob?.cancel()
         installJob = viewModelScope.launch {
             try {
                 _isInstalling.value = true
-                val apkFile = repository.installGame(game) { message, progress, current, total ->
+                val apkFile = repository.installGame(game) { message, progress, _, _ ->
                     _progressMessage.value = "$message (${(progress * 100).toInt()}%)"
                 }
                 if (apkFile != null) {

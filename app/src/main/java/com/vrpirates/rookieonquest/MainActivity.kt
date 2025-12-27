@@ -79,6 +79,15 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
 
+    // Update visible indices for priority fetching
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo }
+            .collect { visibleItems ->
+                val indices = visibleItems.map { it.index }
+                viewModel.setVisibleIndices(indices)
+            }
+    }
+
     // Handle events from ViewModel
     LaunchedEffect(Unit) {
         viewModel.events.collectLatest { event ->

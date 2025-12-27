@@ -2,42 +2,33 @@
 
 Ce document décrit le plan d'action basé sur les issues GitHub actuelles.
 
-## 1. Priorité Critique (Bugs)
+## 1. Terminé ✅
 
 ### [BUG] Nothing happens after download. (#5)
-*   **Objectif :** Diagnostiquer et corriger le problème empêchant l'installation ou l'action post-téléchargement.
-*   **Actions :**
-    *   Vérifier les logs lors de la complétion du téléchargement.
-    *   Examiner le `BroadcastReceiver` ou le callback du gestionnaire de téléchargement.
-    *   S'assurer que les permissions d'installation d'APK sont correctement gérées.
-
-## 2. Gestionnaire de Téléchargement (Download Manager Refactor)
-
-Ce groupe de fonctionnalités nécessite probablement une refonte de la logique de téléchargement pour gérer l'état et la persistance des fichiers.
+*   **Statut :** Résolu. L'installation se lance via `FileProvider`.
 
 ### [FEATURE] Resume download (#8)
-*   **Objectif :** Permettre la reprise d'un téléchargement interrompu.
-*   **Actions :** Utiliser les capacités de reprise du `DownloadManager` Android ou implémenter une gestion manuelle des `Range` headers.
+*   **Statut :** Résolu. Support des headers HTTP `Range`.
 
-### [FEATURE] Keep downloaded file (#7)
-*   **Objectif :** Ne pas supprimer le fichier APK après l'installation (ou l'échec).
-*   **Actions :** Ajouter une option dans les paramètres (à créer si inexistant) pour conserver les fichiers. Modifier le nettoyage post-installation.
+### [FEATURE] Alphabetical Indexer
+*   **Statut :** Résolu. Navigation rapide fonctionnelle.
 
-### [FEATURE] Option to download only and install later (#9)
-*   **Objectif :** Dissocier le téléchargement de l'installation immédiate.
-*   **Actions :** Ajouter un bouton "Télécharger" distinct de "Installer" ou une option contextuelle.
+### [FEATURE] Display game size in list (#6) - Base & Cache
+*   **Statut :** Résolu. Affichage de la taille et mise en cache locale (SharedPreferences).
 
-## 3. Interface Utilisateur & Données
+## 2. En cours / Priorité Immédiate 🚀
 
-### [FEATURE] Add other fields to the games list (#6)
-*   **Objectif :** Afficher plus d'informations dans la liste des jeux (ex: version, taille, date).
+### [UX] Prioritized size fetching
+*   **Objectif :** Charger les tailles des jeux visibles ou recherchés en priorité.
 *   **Actions :**
-    *   Mettre à jour le modèle de données (`GameData` ou équivalent).
-    *   Mettre à jour le parsing JSON si nécessaire.
-    *   Adapter le layout de l'élément de liste (`GameListItem`).
+    *   Passer les indices visibles de la `LazyColumn` au `ViewModel`.
+    *   Réorganiser la file d'attente `fetchGameSizes` dynamiquement.
 
 ### [FEATURE] Update popup (#10)
-*   **Objectif :** Avertir l'utilisateur lorsqu'une nouvelle version de l'application est disponible.
-*   **Actions :**
-    *   Implémenter une vérification de version au lancement (appel API GitHub Releases ou fichier JSON distant).
-    *   Afficher une `AlertDialog` ou un `Snackbar` si une mise à jour est détectée.
+*   **Objectif :** Vérification de version de l'app via GitHub API.
+
+## 3. Gestionnaire de Téléchargement (Refactor)
+*   **[FEATURE] Keep downloaded file (#7) & Download only (#9)**
+
+## 4. UX & Divers
+*   **Multi-mirror support.**

@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import java.io.File
+import java.util.Locale
 
 enum class InstallStatus {
     NOT_INSTALLED,
@@ -37,7 +38,8 @@ data class GameItemState(
     val packageName: String,
     val releaseName: String,
     val iconFile: File?,
-    val installStatus: InstallStatus = InstallStatus.NOT_INSTALLED
+    val installStatus: InstallStatus = InstallStatus.NOT_INSTALLED,
+    val size: String? = null
 )
 
 @Composable
@@ -102,7 +104,9 @@ fun GameListItem(
                         letterSpacing = 0.5.sp
                     ),
                     color = Color.White,
-                    fontSize = 15.sp
+                    fontSize = 15.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 
                 Spacer(modifier = Modifier.height(4.dp))
@@ -129,6 +133,15 @@ fun GameListItem(
                         color = if (game.installStatus == InstallStatus.UPDATE_AVAILABLE) Color(0xFF2ecc71) else Color(0xFF3498db),
                         fontWeight = FontWeight.Medium
                     )
+                    
+                    if (game.size != null) {
+                        Text(
+                            text = " • ${game.size}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                            modifier = Modifier.padding(start = 4.dp)
+                        )
+                    }
                 }
                 
                 Spacer(modifier = Modifier.height(2.dp))
@@ -182,4 +195,11 @@ fun GameListItem(
             }
         }
     }
+}
+
+fun formatSize(bytes: Long): String {
+    if (bytes <= 0) return "0 B"
+    val units = arrayOf("B", "KB", "MB", "GB", "TB")
+    val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
+    return String.format(Locale.US, "%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
 }

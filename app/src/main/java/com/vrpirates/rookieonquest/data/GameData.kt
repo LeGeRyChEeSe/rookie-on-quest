@@ -4,5 +4,6 @@ data class GameData(
     val gameName: String,
     val packageName: String,
     val versionCode: String,
-    val releaseName: String
+    val releaseName: String,
+    val sizeBytes: Long? = null
 )

@@ -9,13 +9,12 @@ import android.util.Log
 import com.vrpirates.rookieonquest.logic.CatalogParser
 import com.vrpirates.rookieonquest.network.PublicConfig
 import com.vrpirates.rookieonquest.network.VrpService
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.apache.commons.compress.archivers.sevenz.SevenZFile
@@ -30,6 +29,8 @@ import java.util.concurrent.TimeUnit
 class MainRepository(private val context: Context) {
     private val TAG = "MainRepository"
     private val catalogMutex = Mutex()
+    private val db = AppDatabase.getDatabase(context)
+    private val gameDao = db.gameDao()
     
     private val retrofit = Retrofit.Builder()
         .baseUrl("https://vrpirates.wiki/")
@@ -51,6 +52,14 @@ class MainRepository(private val context: Context) {
     private val catalogCacheFile = File(context.filesDir, "VRP-GameList.txt")
     private val tempInstallRoot = File(context.cacheDir, "install_temp")
 
+    fun getAllGamesFlow(): Flow<List<GameData>> = gameDao.getAllGames().map { entities ->
+        entities.map { it.toData() }
+    }
+
+    fun searchGamesFlow(query: String): Flow<List<GameData>> = gameDao.searchGames("%$query%").map { entities ->
+        entities.map { it.toData() }
+    }
+
     suspend fun fetchConfig(): PublicConfig = withContext(Dispatchers.IO) {
         try {
             val config = service.getPublicConfig()
@@ -68,7 +77,7 @@ class MainRepository(private val context: Context) {
         }
     }
 
-    suspend fun downloadCatalog(baseUri: String): List<GameData> = withContext(Dispatchers.IO) {
+    suspend fun syncCatalog(baseUri: String) = withContext(Dispatchers.IO) {
         catalogMutex.withLock {
             val sanitizedBase = if (baseUri.endsWith("/")) baseUri else "$baseUri/"
             val metaUrl = "${sanitizedBase}meta.7z"
@@ -76,8 +85,9 @@ class MainRepository(private val context: Context) {
             val lastModified = getRemoteLastModified(metaUrl)
             val savedModified = prefs.getString("meta_last_modified", "")
             
-            if (catalogCacheFile.exists() && lastModified == savedModified && lastModified != null) {
-                return@withContext CatalogParser.parse(catalogCacheFile.readText())
+            if (catalogCacheFile.exists() && lastModified == savedModified && lastModified != null && gameDao.getCount() > 0) {
+                // Already up to date in DB
+                return@withLock
             }
 
             val tempMetaFile = File.createTempFile("meta_", ".7z", context.cacheDir)
@@ -102,11 +112,15 @@ class MainRepository(private val context: Context) {
                     if (lastModified != null) {
                         prefs.edit().putString("meta_last_modified", lastModified).apply()
                     }
-                    CatalogParser.parse(gameListContent)
-                } else if (catalogCacheFile.exists()) {
-                    CatalogParser.parse(catalogCacheFile.readText())
-                } else {
-                    throw Exception("Failed to extract catalog")
+                    val newList = CatalogParser.parse(gameListContent)
+                    
+                    val existingGames = gameDao.getAllGamesList().associate { it.releaseName to it.sizeBytes }
+                    
+                    val entities = newList.map { game ->
+                        game.copy(sizeBytes = existingGames[game.releaseName]).toEntity()
+                    }
+                    
+                    gameDao.insertGames(entities)
                 }
             } finally {
                 if (tempMetaFile.exists()) tempMetaFile.delete()
@@ -180,27 +194,48 @@ class MainRepository(private val context: Context) {
         val sanitizedBase = if (config.baseUri.endsWith("/")) config.baseUri else "${config.baseUri}/"
         val dirUrl = "$sanitizedBase$hash/"
 
-        val request = Request.Builder().url(dirUrl).header("User-Agent", "rclone/v1.72.1").build()
-        val segments = mutableListOf<String>()
-        okHttpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw Exception("Mirror error: ${response.code}")
-            val html = response.body?.string() ?: ""
-            val matcher = java.util.regex.Pattern.compile("href\\s*=\\s*\"([^\"]+\\.(7z\\.\\d{3}|apk))\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html)
-            while (matcher.find()) {
-                matcher.group(1)?.let { segments.add(it) }
+        try {
+            val request = Request.Builder().url(dirUrl).header("User-Agent", "rclone/v1.72.1").build()
+            val segments = mutableListOf<String>()
+            okHttpClient.newCall(request).execute().use { response ->
+                if (response.code == 404) {
+                    gameDao.updateSize(game.releaseName, -1L)
+                    throw Exception("Mirror error: 404")
+                }
+                if (!response.isSuccessful) throw Exception("Mirror error: ${response.code}")
+                
+                val html = response.body?.string() ?: ""
+                val matcher = java.util.regex.Pattern.compile("href\\s*=\\s*\"([^\"]+\\.(7z\\.\\d{3}|apk))\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html)
+                while (matcher.find()) {
+                    matcher.group(1)?.let { segments.add(it) }
+                }
             }
-        }
-        segments.sort()
+            segments.sort()
 
-        var totalSize = 0L
-        for (seg in segments) {
-            val headRequest = Request.Builder().url(dirUrl + seg).head().header("User-Agent", "rclone/v1.72.1").build()
-            okHttpClient.newCall(headRequest).execute().use { response ->
-                totalSize += response.header("Content-Length")?.toLongOrNull() ?: 0L
+            val totalSize = segments.map { seg ->
+                async {
+                    val headRequest = Request.Builder()
+                        .url(dirUrl + seg)
+                        .head()
+                        .header("User-Agent", "rclone/v1.72.1")
+                        .build()
+                    okHttpClient.newCall(headRequest).execute().use { response ->
+                        response.header("Content-Length")?.toLongOrNull() ?: 0L
+                    }
+                }
+            }.awaitAll().sum()
+            
+            // Update DB with the size
+            gameDao.updateSize(game.releaseName, totalSize)
+            segments to totalSize
+        } catch (e: Exception) {
+            // If it's a 404 we already updated the DB, for other errors we might want to retry later
+            // but setting to -1 for now to avoid the loop
+            if (e.message?.contains("404") == true) {
+                 gameDao.updateSize(game.releaseName, -1L)
             }
+            throw e
         }
-
-        segments to totalSize
     }
 
     suspend fun getDownloadedSize(gameReleaseName: String): Long {
