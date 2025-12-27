@@ -35,9 +35,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
-    kotlinOptions {
-        jvmTarget = "1.8"
+    
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_1_8)
+        }
     }
+    
     buildFeatures {
         compose = true
         buildConfig = true
@@ -50,13 +54,15 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+}
 
-    // Renommage de l'APK final
-    applicationVariants.all {
-        val variant = this
-        variant.outputs.all {
-            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
-            output.outputFileName = "RookieOnQuest-v${variant.versionName}.apk"
+// Renommage de l'APK final
+// Note: applicationVariants is deprecated but the replacement in androidComponents 
+// for simple output renaming is still complex in some AGP versions.
+android.applicationVariants.all {
+    outputs.all {
+        if (this is com.android.build.gradle.internal.api.BaseVariantOutputImpl) {
+            outputFileName = "RookieOnQuest-v${versionName}.apk"
         }
     }
 }
