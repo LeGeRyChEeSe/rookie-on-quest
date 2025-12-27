@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -80,6 +81,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val searchQuery by viewModel.searchQuery.collectAsState()
     val missingPermissions by viewModel.missingPermissions.collectAsState()
     val alphabetInfo by viewModel.alphabetInfo.collectAsState()
+    val keepApks by viewModel.keepApks.collectAsState()
     
     val isUpdateDownloading by viewModel.isUpdateDownloading.collectAsState()
     val updateProgress by viewModel.updateProgress.collectAsState()
@@ -90,6 +92,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val context = LocalContext.current
     
     var showUpdateDialog by remember { mutableStateOf<com.vrpirates.rookieonquest.network.GitHubRelease?>(null) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
 
     // Update visible indices for priority fetching
     LaunchedEffect(listState) {
@@ -163,12 +166,19 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         }
     }
 
-    // Refresh data when returning to the app
+    // Lifecycle observer for permissions and app visibility
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.checkPermissions()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    viewModel.checkPermissions()
+                    viewModel.setAppVisibility(true)
+                }
+                Lifecycle.Event.ON_PAUSE -> {
+                    viewModel.setAppVisibility(false)
+                }
+                else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -240,6 +250,36 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         )
     }
 
+    if (showSettingsDialog) {
+        AlertDialog(
+            onDismissRequest = { showSettingsDialog = false },
+            title = { Text("Settings") },
+            text = {
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { viewModel.toggleKeepApks() },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(checked = keepApks, onCheckedChange = { viewModel.toggleKeepApks() })
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text("Keep APKs after installation", color = Color.White)
+                            Text("Saves files to Download/RookieOnQuest", color = Color.Gray, fontSize = 12.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSettingsDialog = false }) {
+                    Text("CLOSE")
+                }
+            },
+            containerColor = Color(0xFF1A1A1A),
+            titleContentColor = Color.White,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
@@ -247,6 +287,9 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 TopAppBar(
                     title = { Text("ROOKIE ON QUEST", color = Color.White, style = MaterialTheme.typography.titleSmall) },
                     actions = {
+                        IconButton(onClick = { showSettingsDialog = true }) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
+                        }
                         IconButton(
                             onClick = { if (!isInstalling && missingPermissions?.isEmpty() == true) viewModel.refreshData() },
                             enabled = !isInstalling && missingPermissions?.isEmpty() == true
@@ -326,7 +369,8 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                         GameListItem(
                                             game = game,
                                             onInstallClick = { if (!isInstalling) viewModel.installGame(game.packageName) },
-                                            onUninstallClick = { viewModel.uninstallGame(game.packageName) }
+                                            onUninstallClick = { viewModel.uninstallGame(game.packageName) },
+                                            onDownloadOnlyClick = { if (!isInstalling) viewModel.installGame(game.packageName, downloadOnly = true) }
                                         )
                                     }
                                 }
@@ -561,7 +605,6 @@ fun parseMarkdown(text: String) = buildAnnotatedString {
         }
         
         // Handle Headers (starting with one or more #)
-        // Use a more aggressive regex to clean the '#' and spaces
         val headerMatch = Regex("^#+\\s*(.*)$").find(trimmed)
         if (headerMatch != null) {
             val title = headerMatch.groupValues[1]

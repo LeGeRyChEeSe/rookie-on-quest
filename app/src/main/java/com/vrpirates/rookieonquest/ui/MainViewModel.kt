@@ -47,6 +47,7 @@ enum class RequiredPermission {
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val TAG = "MainViewModel"
     private val repository = MainRepository(application)
+    private val prefs = application.getSharedPreferences("rookie_prefs", Context.MODE_PRIVATE)
     
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery
@@ -71,6 +72,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _updateProgress = MutableStateFlow("")
     val updateProgress: StateFlow<String> = _updateProgress
 
+    private val _keepApks = MutableStateFlow(prefs.getBoolean("keep_apks", false))
+    val keepApks: StateFlow<Boolean> = _keepApks
+
+    private val _isAppVisible = MutableStateFlow(false)
+
     private var isPermissionFlowActive = false
     private var previousMissingCount = 0
     private var refreshJob: Job? = null
@@ -88,8 +94,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    // Get games directly from Room
+    // Get games directly from Room with intelligent sorting
     private val _allGames = repository.getAllGamesFlow()
+        .map { list ->
+            list.sortedWith(compareBy<GameData> {
+                val c = it.gameName.firstOrNull() ?: ' '
+                when {
+                    c == '_' -> 0
+                    c.isDigit() -> 1
+                    else -> 2
+                }
+            }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.gameName })
+        }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val games: StateFlow<List<GameItemState>> = combine(
@@ -136,21 +152,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val alphabetInfo: StateFlow<Pair<List<Char>, Map<Char, Int>>> = games
         .map { list ->
-            val chars = mutableSetOf<Char>()
+            val chars = mutableListOf<Char>()
             val charToIndex = mutableMapOf<Char, Int>()
             list.forEachIndexed { index, game ->
-                val firstChar = game.name.firstOrNull()?.uppercaseChar() ?: '_'
-                if (!charToIndex.containsKey(firstChar)) {
-                    chars.add(firstChar)
-                    charToIndex[firstChar] = index
+                val firstChar = game.name.trim().firstOrNull()?.uppercaseChar() ?: '_'
+                val mappedChar = when {
+                    firstChar == '_' -> '_'
+                    firstChar.isDigit() -> '#' // Use # to represent all digits
+                    else -> firstChar
+                }
+                if (!charToIndex.containsKey(mappedChar)) {
+                    chars.add(mappedChar)
+                    charToIndex[mappedChar] = index
                 }
             }
-            val sortedList = chars.sorted().toMutableList()
-            if (sortedList.contains('_')) {
-                sortedList.remove('_')
-                sortedList.add(0, '_')
-            }
-            sortedList to charToIndex
+            chars to charToIndex
         }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList<Char>() to emptyMap<Char, Int>())
@@ -186,7 +202,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val latestClean = latest.tagName.lowercase().removePrefix("v")
             val currentClean = currentVersion.lowercase().removePrefix("v")
             
-            if (latestClean != currentClean) {
+            if (isVersionNewer(latestClean, currentClean)) {
                 _isUpdateDialogShowing.value = true
                 _events.emit(MainEvent.ShowUpdatePopup(latest))
                 true
@@ -199,6 +215,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Compares two version strings (e.g., "2.1.0" and "2.0.0").
+     * Returns true if [latest] is strictly greater than [current].
+     */
+    private fun isVersionNewer(latest: String, current: String): Boolean {
+        val latestParts = latest.split('.').mapNotNull { it.filter { c -> c.isDigit() }.toIntOrNull() }
+        val currentParts = current.split('.').mapNotNull { it.filter { c -> c.isDigit() }.toIntOrNull() }
+        
+        val maxLength = maxOf(latestParts.size, currentParts.size)
+        for (i in 0 until maxLength) {
+            val latestPart = latestParts.getOrElse(i) { 0 }
+            val currentPart = currentParts.getOrElse(i) { 0 }
+            if (latestPart > currentPart) return true
+            if (latestPart < currentPart) return false
+        }
+        return false
+    }
+
     fun downloadAndInstallUpdate(release: GitHubRelease) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -209,7 +243,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ?: throw Exception("No APK found in release assets")
                 
                 val context = getApplication<Application>()
-                // Use external storage for update APK to avoid permission issues
                 val targetFile = File(context.getExternalFilesDir(null), "rookie_update.apk")
                 
                 val request = Request.Builder().url(apkAsset.downloadUrl).build()
@@ -244,7 +277,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 Log.e(TAG, "Update error", e)
                 _error.value = "Update failed: ${e.message}"
                 _isUpdateDownloading.value = false
-                // Resume app on fail
                 onUpdateDialogDismissed()
             }
         }
@@ -264,10 +296,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setAppVisibility(visible: Boolean) {
+        if (_isAppVisible.value != visible) {
+            _isAppVisible.value = visible
+            if (visible) {
+                priorityUpdateChannel.trySend(Unit)
+            }
+        }
+    }
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private fun startSizeFetchLoop() {
         sizeFetchJob = viewModelScope.launch(Dispatchers.Default) {
             while (true) {
+                // Pause fetching if the app is in background to save resources
+                if (!_isAppVisible.value) {
+                    Log.d(TAG, "Size fetch loop suspended (app in background)")
+                    _isAppVisible.first { it }
+                    Log.d(TAG, "Size fetch loop resumed")
+                }
+
                 val currentGames = _allGames.value
                 val currentSearch = _searchQuery.value
                 if (currentGames.isEmpty()) {
@@ -298,23 +346,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     needsSize
                 }
 
+                // ONLY fetch sizes for games currently visible on screen
                 val target = candidates.find { prioritizedPackages.contains(it.packageName) }
-                    ?: candidates.firstOrNull()
-                    ?: if (currentSearch.isEmpty()) needsSize.firstOrNull() else null
 
                 if (target != null) {
                     try {
-                        Log.d(TAG, "Fetching size for ${target.gameName}")
+                        Log.d(TAG, "Fetching size for visible game: ${target.gameName}")
                         repository.getGameRemoteInfo(target)
                     } catch (e: Exception) {
                         Log.e(TAG, "Error fetching size for ${target.gameName}", e)
                         delay(2000)
                     }
-                }
-
-                select<Unit> {
-                    priorityUpdateChannel.onReceive { }
-                    onTimeout(100.milliseconds) { }
+                    
+                    // Small delay or wait for new priority signal before next fetch
+                    select<Unit> {
+                        priorityUpdateChannel.onReceive { }
+                        onTimeout(100.milliseconds) { }
+                    }
+                } else {
+                    // No visible games need size fetching, wait for a signal (scroll, search, etc.)
+                    priorityUpdateChannel.receive()
                 }
             }
         }
@@ -419,32 +470,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun installGame(packageName: String) {
+    fun installGame(packageName: String, downloadOnly: Boolean = false) {
         if (_missingPermissions.value?.isNotEmpty() == true) {
             startPermissionFlow()
             return
         }
 
         val game = _allGames.value.find { it.packageName == packageName } ?: return
+        val keepApk = _keepApks.value
+        
         installJob?.cancel()
         installJob = viewModelScope.launch {
             try {
                 _isInstalling.value = true
-                val apkFile = repository.installGame(game) { message, progress, _, _ ->
+                val apkFile = repository.installGame(
+                    game = game,
+                    keepApk = keepApk,
+                    downloadOnly = downloadOnly
+                ) { message, progress, _, _ ->
                     _progressMessage.value = "$message (${(progress * 100).toInt()}%)"
                 }
-                if (apkFile != null) {
+                if (apkFile != null && !downloadOnly) {
                     _events.emit(MainEvent.InstallApk(apkFile))
                 }
             } catch (e: Exception) {
                 if (e !is kotlinx.coroutines.CancellationException) {
-                    _error.value = "Installation error: ${e.message}"
+                    _error.value = "Error: ${e.message}"
                 }
             } finally {
                 _isInstalling.value = false
                 _progressMessage.value = null
             }
         }
+    }
+
+    fun toggleKeepApks() {
+        val newValue = !_keepApks.value
+        _keepApks.value = newValue
+        prefs.edit().putBoolean("keep_apks", newValue).apply()
     }
 
     fun uninstallGame(packageName: String) {

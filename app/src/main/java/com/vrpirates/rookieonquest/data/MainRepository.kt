@@ -51,6 +51,7 @@ class MainRepository(private val context: Context) {
     val iconsDir = File(context.filesDir, "icons").apply { if (!exists()) mkdirs() }
     private val catalogCacheFile = File(context.filesDir, "VRP-GameList.txt")
     private val tempInstallRoot = File(context.cacheDir, "install_temp")
+    val downloadsDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "RookieOnQuest").apply { if (!exists()) mkdirs() }
 
     fun getAllGamesFlow(): Flow<List<GameData>> = gameDao.getAllGames().map { entities ->
         entities.map { it.toData() }
@@ -86,7 +87,6 @@ class MainRepository(private val context: Context) {
             val savedModified = prefs.getString("meta_last_modified", "")
             
             if (catalogCacheFile.exists() && lastModified == savedModified && lastModified != null && gameDao.getCount() > 0) {
-                // Already up to date in DB
                 return@withLock
             }
 
@@ -225,12 +225,9 @@ class MainRepository(private val context: Context) {
                 }
             }.awaitAll().sum()
             
-            // Update DB with the size
             gameDao.updateSize(game.releaseName, totalSize)
             segments to totalSize
         } catch (e: Exception) {
-            // If it's a 404 we already updated the DB, for other errors we might want to retry later
-            // but setting to -1 for now to avoid the loop
             if (e.message?.contains("404") == true) {
                  gameDao.updateSize(game.releaseName, -1L)
             }
@@ -238,23 +235,10 @@ class MainRepository(private val context: Context) {
         }
     }
 
-    suspend fun getDownloadedSize(gameReleaseName: String): Long {
-        val hash = md5(gameReleaseName + "\n")
-        val gameTempDir = File(tempInstallRoot, hash)
-        if (!gameTempDir.exists()) return 0L
-        return gameTempDir.listFiles()?.filter { !it.isDirectory }?.sumOf { it.length() } ?: 0L
-    }
-
-    fun cancelInstallation(gameReleaseName: String) {
-        val hash = md5(gameReleaseName + "\n")
-        val gameTempDir = File(tempInstallRoot, hash)
-        if (gameTempDir.exists()) {
-            gameTempDir.deleteRecursively()
-        }
-    }
-
     suspend fun installGame(
         game: GameData, 
+        keepApk: Boolean = false,
+        downloadOnly: Boolean = false,
         onProgress: (String, Float, Long, Long) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         val config = cachedConfig ?: throw Exception("Config not loaded")
@@ -274,7 +258,6 @@ class MainRepository(private val context: Context) {
         val localPaths = mutableListOf<File>()
         var totalBytesDownloaded = 0L
 
-        // PRE-CALCULATE already downloaded bytes for global progress
         for (seg in segments) {
             val f = File(gameTempDir, seg)
             if (f.exists()) totalBytesDownloaded += f.length()
@@ -368,6 +351,24 @@ class MainRepository(private val context: Context) {
         val finalApk = apks[0]
 
         val obbs = extractionDir.listFiles { _, name -> name.endsWith(".obb", true) }
+        
+        if (downloadOnly || keepApk) {
+            onProgress("Saving files...", 0.92f, totalBytes, totalBytes)
+            val gameDownloadDir = File(downloadsDir, game.releaseName.replace(Regex("[^a-zA-Z0-9.-]"), "_"))
+            if (!gameDownloadDir.exists()) gameDownloadDir.mkdirs()
+            
+            finalApk.copyTo(File(gameDownloadDir, finalApk.name), overwrite = true)
+            obbs?.forEach { obb ->
+                obb.copyTo(File(gameDownloadDir, obb.name), overwrite = true)
+            }
+        }
+
+        if (downloadOnly) {
+            onProgress("Download complete", 1f, totalBytes, totalBytes)
+            gameTempDir.deleteRecursively()
+            return@withContext null
+        }
+
         if (!obbs.isNullOrEmpty()) {
             onProgress("Installing OBBs...", 0.96f, totalBytes, totalBytes)
             moveObbFiles(obbs, game.packageName)

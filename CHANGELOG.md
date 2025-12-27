@@ -5,25 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.1] - 2025-12-27
+## [2.1.0] - 2025-12-27
 
-### Added
-- **In-App Updates:** Automatically checks for new versions via GitHub and allows in-app updating.
-- **Database Caching:** Implemented Room database for efficient game list caching and faster startup.
-- **Game Size Display:** Added display of game sizes in the list with local caching.
-- **Smart Fetching:** Prioritized fetching of game sizes based on visible items in the list for better UX.
-- **Permissions Management:** New guided flow for granting necessary permissions (Install Unknown Apps, Manage External Storage).
-- **Resume Capability:** Downloads can now resume if interrupted.
+### ✨ New Features
+- **Automatic Updates:** The app now updates itself easily without needing a computer.
+- **See Game Sizes:** You can now see how big a game is before downloading it.
+- **Download Options:** You can choose to "Download Only" (without installing) or "Keep Files" after installation to save them for later.
+- **Settings Menu:** A new menu to configure your preferences (like keeping downloaded files).
+- **Resume Downloads:** If your internet cuts out, downloads now pick up right where they left off.
 
-### Changed
-- **Architecture:** Refactored `MainViewModel` and `MainRepository` to use Reactive Streams (Flow) and database as the single source of truth.
-- **Performance:** Significant improvements to UI responsiveness and catalog loading. Heavy calculations moved off the main thread.
-- **Installation Logic:** More robust APK and OBB installation process.
-- **UI Modularization:** Cleaner code structure for UI components.
-- **Gradle:** Adjusted Gradle wrapper version for better stability.
+### 🚀 Improvements
+- **Background Installation:** Game installations now continue even if you leave the app.
+- **Faster Startup:** The app loads much faster and feels smoother to use.
+- **Better Battery Life:** The app now pauses background tasks when you're not using it to save resources.
+- **Easier Setup:** A simple guide helps you set up permissions on the first run.
+- **Smarter Sorting:** Games are organized better, making them easier to find.
 
-### Fixed
-- **Typography:** Fixed potential font resolution freezes.
+### 🔧 Fixes
+- **Installation:** Made game installations more reliable (especially for large games).
+- **General:** Various small bug fixes and performance tweaks.
 
 ## [2.0.0] - 2025-12-22
 

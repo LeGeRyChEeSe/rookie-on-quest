@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -22,7 +23,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import java.io.File
-import java.util.Locale
 
 enum class InstallStatus {
     NOT_INSTALLED,
@@ -46,7 +46,8 @@ data class GameItemState(
 fun GameListItem(
     game: GameItemState,
     onInstallClick: () -> Unit,
-    onUninstallClick: () -> Unit
+    onUninstallClick: () -> Unit,
+    onDownloadOnlyClick: () -> Unit
 ) {
     val buttonColor = when (game.installStatus) {
         InstallStatus.NOT_INSTALLED -> Color.Transparent
@@ -169,6 +170,19 @@ fun GameListItem(
                             modifier = Modifier.size(20.dp)
                         )
                     }
+                } else {
+                    // Download only button
+                    IconButton(
+                        onClick = onDownloadOnlyClick,
+                        modifier = Modifier.size(36.dp).padding(end = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = "Download Only",
+                            tint = Color.Gray,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
                 
                 Button(
@@ -195,11 +209,4 @@ fun GameListItem(
             }
         }
     }
-}
-
-fun formatSize(bytes: Long): String {
-    if (bytes <= 0) return "0 B"
-    val units = arrayOf("B", "KB", "MB", "GB", "TB")
-    val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
-    return String.format(Locale.US, "%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
 }
