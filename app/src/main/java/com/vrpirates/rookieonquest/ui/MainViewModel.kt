@@ -2,13 +2,17 @@ package com.vrpirates.rookieonquest.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.vrpirates.rookieonquest.BuildConfig
 import com.vrpirates.rookieonquest.data.GameData
 import com.vrpirates.rookieonquest.data.MainRepository
+import com.vrpirates.rookieonquest.network.GitHubRelease
+import com.vrpirates.rookieonquest.network.GitHubService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -18,7 +22,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
 import java.io.File
+import java.util.Locale
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.milliseconds
 
 sealed class MainEvent {
@@ -26,6 +36,7 @@ sealed class MainEvent {
     data class InstallApk(val apkFile: File) : MainEvent()
     object RequestInstallPermission : MainEvent()
     object RequestStoragePermission : MainEvent()
+    data class ShowUpdatePopup(val release: GitHubRelease) : MainEvent()
 }
 
 enum class RequiredPermission {
@@ -51,11 +62,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _visibleIndices = MutableStateFlow<List<Int>>(emptyList())
     private val priorityUpdateChannel = Channel<Unit>(Channel.CONFLATED)
 
+    private val _isUpdateDialogShowing = MutableStateFlow(false)
+    val isUpdateDialogShowing: StateFlow<Boolean> = _isUpdateDialogShowing
+
+    private val _isUpdateDownloading = MutableStateFlow(false)
+    val isUpdateDownloading: StateFlow<Boolean> = _isUpdateDownloading
+
+    private val _updateProgress = MutableStateFlow("")
+    val updateProgress: StateFlow<String> = _updateProgress
+
     private var isPermissionFlowActive = false
     private var previousMissingCount = 0
     private var refreshJob: Job? = null
     private var sizeFetchJob: Job? = null
     private var installJob: Job? = null
+
+    private val githubService = Retrofit.Builder()
+        .baseUrl("https://api.github.com/")
+        .addConverterFactory(GsonConverterFactory.create())
+        .build()
+        .create(GitHubService::class.java)
+
+    private val okHttpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
 
     // Get games directly from Room
     private val _allGames = repository.getAllGamesFlow()
@@ -96,7 +127,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 releaseName = game.releaseName,
                 iconFile = if (iconFile.exists()) iconFile else if (fallbackIcon.exists()) fallbackIcon else null,
                 installStatus = status,
-                size = game.sizeBytes?.let { formatSize(it) }
+                size = if (game.sizeBytes != null && game.sizeBytes > 0) formatSize(game.sizeBytes) else null
             )
         }
     }
@@ -137,6 +168,91 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val progressMessage: StateFlow<String?> = _progressMessage
 
     init {
+        // Only start heavy work AFTER update check
+        viewModelScope.launch {
+            val updateAvailable = checkForAppUpdates()
+            if (!updateAvailable) {
+                checkPermissions()
+                startSizeFetchLoop()
+            }
+        }
+    }
+
+    private suspend fun checkForAppUpdates(): Boolean {
+        return try {
+            val latest = githubService.getLatestRelease()
+            val currentVersion = BuildConfig.VERSION_NAME
+            
+            val latestClean = latest.tagName.lowercase().removePrefix("v")
+            val currentClean = currentVersion.lowercase().removePrefix("v")
+            
+            if (latestClean != currentClean) {
+                _isUpdateDialogShowing.value = true
+                _events.emit(MainEvent.ShowUpdatePopup(latest))
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to check for updates: ${e.message}")
+            false
+        }
+    }
+
+    fun downloadAndInstallUpdate(release: GitHubRelease) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _isUpdateDownloading.value = true
+                _isUpdateDialogShowing.value = false
+                
+                val apkAsset = release.assets.find { it.name.endsWith(".apk", true) }
+                    ?: throw Exception("No APK found in release assets")
+                
+                val context = getApplication<Application>()
+                // Use external storage for update APK to avoid permission issues
+                val targetFile = File(context.getExternalFilesDir(null), "rookie_update.apk")
+                
+                val request = Request.Builder().url(apkAsset.downloadUrl).build()
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                    val totalSize = response.body?.contentLength() ?: -1L
+                    var downloaded = 0L
+                    
+                    response.body?.byteStream()?.use { input ->
+                        targetFile.outputStream().use { output ->
+                            val buffer = ByteArray(8192 * 8)
+                            var bytesRead: Int
+                            while (input.read(buffer).also { bytesRead = it } != -1) {
+                                output.write(buffer, 0, bytesRead)
+                                downloaded += bytesRead
+                                if (totalSize > 0) {
+                                    _updateProgress.value = "Downloading update: ${(downloaded * 100 / totalSize)}%"
+                                } else {
+                                    _updateProgress.value = "Downloading update..."
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                _updateProgress.value = "Launching installer..."
+                withContext(Dispatchers.Main) {
+                    _events.emit(MainEvent.InstallApk(targetFile))
+                    _isUpdateDownloading.value = false
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Update error", e)
+                _error.value = "Update failed: ${e.message}"
+                _isUpdateDownloading.value = false
+                // Resume app on fail
+                onUpdateDialogDismissed()
+            }
+        }
+    }
+
+    fun onUpdateDialogDismissed() {
+        if (_isUpdateDownloading.value) return
+        _isUpdateDialogShowing.value = false
         checkPermissions()
         startSizeFetchLoop()
     }
@@ -190,7 +306,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     try {
                         Log.d(TAG, "Fetching size for ${target.gameName}")
                         repository.getGameRemoteInfo(target)
-                        // DB update will trigger _allGames flow update
                     } catch (e: Exception) {
                         Log.e(TAG, "Error fetching size for ${target.gameName}", e)
                         delay(2000)
@@ -342,5 +457,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         installJob?.cancel()
         _isInstalling.value = false
         _progressMessage.value = null
+    }
+
+    private fun formatSize(bytes: Long): String {
+        if (bytes <= 0) return ""
+        val units = arrayOf("B", "KB", "MB", "GB", "TB")
+        val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
+        return String.format(Locale.US, "%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
     }
 }

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.1] - 2025-12-27
 
 ### Added
+- **In-App Updates:** Automatically checks for new versions via GitHub and allows in-app updating.
 - **Database Caching:** Implemented Room database for efficient game list caching and faster startup.
 - **Game Size Display:** Added display of game sizes in the list with local caching.
 - **Smart Fetching:** Prioritized fetching of game sizes based on visible items in the list for better UX.

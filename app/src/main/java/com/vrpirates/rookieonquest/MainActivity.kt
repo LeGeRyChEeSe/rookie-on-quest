@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -29,8 +31,13 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -74,10 +81,15 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val missingPermissions by viewModel.missingPermissions.collectAsState()
     val alphabetInfo by viewModel.alphabetInfo.collectAsState()
     
+    val isUpdateDownloading by viewModel.isUpdateDownloading.collectAsState()
+    val updateProgress by viewModel.updateProgress.collectAsState()
+    
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+    
+    var showUpdateDialog by remember { mutableStateOf<com.vrpirates.rookieonquest.network.GitHubRelease?>(null) }
 
     // Update visible indices for priority fetching
     LaunchedEffect(listState) {
@@ -137,6 +149,9 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         }
                     }
                 }
+                is MainEvent.ShowUpdatePopup -> {
+                    showUpdateDialog = event.release
+                }
             }
         }
     }
@@ -160,6 +175,69 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
+    }
+
+    if (showUpdateDialog != null) {
+        AlertDialog(
+            onDismissRequest = { 
+                showUpdateDialog = null 
+                viewModel.onUpdateDialogDismissed()
+            },
+            title = { Text("New Version Available!") },
+            text = { 
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(0.6f)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = "A new version (${showUpdateDialog!!.tagName}) is available.",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "What's New:",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Gray
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = parseMarkdown(showUpdateDialog!!.body),
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            lineHeight = 20.sp,
+                            letterSpacing = 0.25.sp
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.downloadAndInstallUpdate(showUpdateDialog!!)
+                        showUpdateDialog = null
+                    },
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("DOWNLOAD NOW")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { 
+                    showUpdateDialog = null 
+                    viewModel.onUpdateDialogDismissed()
+                }) {
+                    Text("LATER", color = Color.Gray)
+                }
+            },
+            containerColor = Color(0xFF1A1A1A),
+            titleContentColor = Color.White,
+            textContentColor = Color.LightGray,
+            shape = RoundedCornerShape(16.dp)
+        )
     }
 
     Scaffold(
@@ -261,6 +339,13 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                 onCancel = { viewModel.cancelInstall() }
                             )
                         }
+                        
+                        if (isUpdateDownloading) {
+                            InstallationOverlay(
+                                progressMessage = updateProgress,
+                                onCancel = { /* Can't really cancel app update easily here */ }
+                            )
+                        }
 
                         if (isRefreshing && games.isNotEmpty()) {
                             Surface(modifier = Modifier.fillMaxSize(), color = Color.Black.copy(alpha = 0.7f)) {
@@ -309,12 +394,14 @@ fun InstallationOverlay(progressMessage: String?, onCancel: () -> Unit) {
                 Text(text = it, style = MaterialTheme.typography.titleMedium, color = Color.White, textAlign = TextAlign.Center)
             }
             Spacer(modifier = Modifier.height(32.dp))
-            Button(
-                onClick = onCancel,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFCF6679)),
-                shape = RoundedCornerShape(4.dp)
-            ) {
-                Text("CANCEL INSTALLATION", color = Color.White)
+            if (progressMessage?.contains("update", ignoreCase = true) == false) {
+                Button(
+                    onClick = onCancel,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFCF6679)),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("CANCEL INSTALLATION", color = Color.White)
+                }
             }
         }
     }
@@ -458,5 +545,55 @@ fun PermissionItem(permission: RequiredPermission) {
             Text(text = title, color = Color.White, fontWeight = FontWeight.SemiBold)
             Text(text = description, color = Color.Gray, fontSize = 12.sp, lineHeight = 16.sp)
         }
+    }
+}
+
+/**
+ * A robust markdown-ish parser for GitHub release bodies.
+ */
+fun parseMarkdown(text: String) = buildAnnotatedString {
+    val lines = text.split(Regex("\\r?\\n"))
+    lines.forEach { line ->
+        val trimmed = line.trim()
+        if (trimmed.isEmpty()) {
+            append("\n")
+            return@forEach
+        }
+        
+        // Handle Headers (starting with one or more #)
+        // Use a more aggressive regex to clean the '#' and spaces
+        val headerMatch = Regex("^#+\\s*(.*)$").find(trimmed)
+        if (headerMatch != null) {
+            val title = headerMatch.groupValues[1]
+            withStyle(style = SpanStyle(
+                fontWeight = FontWeight.ExtraBold, 
+                fontSize = 18.sp, 
+                color = Color.White
+            )) {
+                append(title)
+            }
+            append("\n\n") // Extra space after title
+            return@forEach
+        }
+        
+        // Handle Bullet points
+        var content = trimmed
+        if (trimmed.startsWith("-") || trimmed.startsWith("*")) {
+            append("  • ")
+            content = trimmed.substring(1).trim()
+        }
+
+        // Handle Bold (**text**)
+        val parts = content.split("**")
+        parts.forEachIndexed { index, part ->
+            if (index % 2 == 1) {
+                withStyle(style = SpanStyle(fontWeight = FontWeight.Bold, color = Color.White)) {
+                    append(part)
+                }
+            } else {
+                append(part)
+            }
+        }
+        append("\n")
     }
 }

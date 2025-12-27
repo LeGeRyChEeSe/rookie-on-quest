@@ -13,19 +13,17 @@ Ce document décrit le plan d'action basé sur les issues GitHub actuelles.
 ### [FEATURE] Alphabetical Indexer
 *   **Statut :** Résolu. Navigation rapide fonctionnelle.
 
-### [FEATURE] Display game size in list (#6) - Base & Cache
-*   **Statut :** Résolu. Affichage de la taille et mise en cache locale (SharedPreferences).
+### [FEATURE] Display game size in list (#6)
+*   **Statut :** Résolu. Affichage de la taille, mise en cache via **Room Database** et chargement prioritaire (visible/recherche).
 
 ## 2. En cours / Priorité Immédiate 🚀
 
-### [UX] Prioritized size fetching
-*   **Objectif :** Charger les tailles des jeux visibles ou recherchés en priorité.
-*   **Actions :**
-    *   Passer les indices visibles de la `LazyColumn` au `ViewModel`.
-    *   Réorganiser la file d'attente `fetchGameSizes` dynamiquement.
-
 ### [FEATURE] Update popup (#10)
-*   **Objectif :** Vérification de version de l'app via GitHub API.
+*   **Objectif :** Vérification de version de l'app via GitHub API et affichage d'une popup de mise à jour.
+*   **Actions :**
+    *   Créer un service pour interroger l'API GitHub.
+    *   Comparer la version locale avec la version distante.
+    *   Afficher une boîte de dialogue si une mise à jour est disponible.
 
 ## 3. Gestionnaire de Téléchargement (Refactor)
 *   **[FEATURE] Keep downloaded file (#7) & Download only (#9)**
