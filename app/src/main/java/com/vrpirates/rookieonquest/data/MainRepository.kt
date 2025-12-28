@@ -238,10 +238,7 @@ class MainRepository(private val context: Context) {
 
     private fun checkAvailableSpace(requiredBytes: Long) {
         val stat = StatFs(context.cacheDir.path)
-        
-        // SIMULATION: Set to 50MB to test low space cases
-        // val availableBytes = stat.availableBlocksLong * stat.blockSizeLong 
-        // val availableBytes = 50L * 1024 * 1024 // FORCE 50MB FOR TESTING
+        val availableBytes = stat.availableBlocksLong * stat.blockSizeLong 
         
         if (availableBytes < requiredBytes) {
             val requiredMb = requiredBytes / (1024 * 1024)
