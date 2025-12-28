@@ -1,24 +1,52 @@
-# Android Gradle / IDEA
-.gradle/
-.idea/
+# Built application files
+*.apk
+*.ap_
+*.aab
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
 build/
 app/build/
 release/
+
+# Gradle files
+.gradle/
+
+# Local configuration file (sdk.dir, etc.)
 local.properties
+
+# Keystore files
+*.jks
+*.keystore
+keystore.properties
+
+# IntelliJ IDEA / Android Studio
+.idea/
+*.iml
+*.iws
+*.ipr
+*.xml
+
+# OS specific
 .DS_Store
-
-# Android specific
-*.apk
-*.ap_
-*.dex
-*.class
-bin/
-gen/
-
-# OS files
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
 # User specific
 *.user
 
+# Project specific
 rookie/
+GEMINI.md
