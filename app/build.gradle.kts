@@ -1,4 +1,4 @@
-import java.util.Properties
+﻿import java.util.Properties
 import java.io.FileInputStream
 
 plugins {
@@ -75,8 +75,6 @@ android {
 }
 
 // Renommage de l'APK final
-// Note: applicationVariants is deprecated but the replacement in androidComponents 
-// for simple output renaming is still complex in some AGP versions.
 android.applicationVariants.all {
     outputs.all {
         if (this is com.android.build.gradle.internal.api.BaseVariantOutputImpl) {

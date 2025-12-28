@@ -16,6 +16,7 @@ out/
 build/
 app/build/
 release/
+dist/
 
 # Gradle files
 .gradle/
@@ -50,3 +51,4 @@ Thumbs.db
 # Project specific
 rookie/
 GEMINI.md
+temp_notes.md

@@ -6,18 +6,18 @@ This document outlines the strategic priorities for the project, categorized by 
 
 ## ✅ Completed Milestones
 
-| Milestone | Impact |
-| :--- | :--- |
-| **Extraction Resilience** | Implemented state markers and cleanup to fix interrupted extraction issues. (#11) |
-| **Storage Validation** | Added pre-flight disk space checks using `StatFs` to prevent mid-download failures. |
+| Milestone                      | Impact                                                                                  |
+|:-------------------------------|:----------------------------------------------------------------------------------------|
+| **Extraction Resilience**      | Implemented state markers and cleanup to fix interrupted extraction issues. (#11)       |
+| **Storage Validation**         | Added pre-flight disk space checks using `StatFs` to prevent mid-download failures.     |
 | **Installed Version Tracking** | Compare `versionCode` against local `PackageInfo` to display "Update Available" badges. |
-| **Silent Install Flow** | Fixed post-extraction installation using `FileProvider`. (#5) |
-| **Download Resumption** | Implemented HTTP `Range` headers for partial downloads. (#8) |
-| **Intelligent Sorting** | Added fast alphabetical indexing with custom symbol handling. |
-| **Metadata Caching** | Local Room database for game sizes and metadata persistence. (#6) |
-| **Auto-Update System** | GitHub API integration for in-app updates and changelogs. (#10) |
-| **Advanced Settings** | Options for APK retention and "Download Only" workflows. (#7, #9) |
-| **Unified Progress UI** | Reactive progress indicators for the entire Download → Extract → Install lifecycle. |
+| **Silent Install Flow**        | Fixed post-extraction installation using `FileProvider`. (#5)                           |
+| **Download Resumption**        | Implemented HTTP `Range` headers for partial downloads. (#8)                            |
+| **Intelligent Sorting**        | Added fast alphabetical indexing with custom symbol handling.                           |
+| **Metadata Caching**           | Local Room database for game sizes and metadata persistence. (#6)                       |
+| **Auto-Update System**         | GitHub API integration for in-app updates and changelogs. (#10)                         |
+| **Advanced Settings**          | Options for APK retention and "Download Only" workflows. (#7, #9)                       |
+| **Unified Progress UI**        | Reactive progress indicators for the entire Download → Extract → Install lifecycle.     |
 
 ---
 
