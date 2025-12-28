@@ -44,6 +44,16 @@ enum class RequiredPermission {
     MANAGE_EXTERNAL_STORAGE
 }
 
+data class InstallState(
+    val isInstalling: Boolean = false,
+    val packageName: String? = null,
+    val gameName: String? = null,
+    val message: String? = null,
+    val progress: Float = 0f,
+    val currentSize: String? = null,
+    val totalSize: String? = null
+)
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val TAG = "MainViewModel"
     private val repository = MainRepository(application)
@@ -177,15 +187,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing
 
-    private val _isInstalling = MutableStateFlow(false)
-    val isInstalling: StateFlow<Boolean> = _isInstalling
+    private val _installState = MutableStateFlow(InstallState())
+    val installState: StateFlow<InstallState> = _installState
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
     
-    private val _progressMessage = MutableStateFlow<String?>(null)
-    val progressMessage: StateFlow<String?> = _progressMessage
-
     init {
         // Only start heavy work AFTER update check
         viewModelScope.launch {
@@ -515,17 +522,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         
         installJob = viewModelScope.launch {
             try {
-                _isInstalling.value = true
+                _installState.value = InstallState(
+                    isInstalling = true,
+                    packageName = packageName,
+                    gameName = game.gameName,
+                    message = "Connecting..."
+                )
+                
                 val apkFile = repository.installGame(
                     game = game,
                     keepApk = keepApk,
                     downloadOnly = downloadOnly
-                ) { message, progress, _, _ ->
-                    _progressMessage.value = "$message (${(progress * 100).toInt()}%)"
+                ) { message, progress, current, total ->
+                    _installState.update { 
+                        it.copy(
+                            message = message,
+                            progress = progress,
+                            currentSize = if (total > 0) formatSize(current) else null,
+                            totalSize = if (total > 0) formatSize(total) else null
+                        )
+                    }
                 }
+                
                 if (apkFile != null && !downloadOnly) {
                     if (!_isAppVisible.value) {
-                        _progressMessage.value = "Ready to install. Please return to the app."
+                        _installState.update { it.copy(message = "Ready to install. Return to app.") }
                         _isAppVisible.first { it }
                     }
                     _events.emit(MainEvent.InstallApk(apkFile))
@@ -536,8 +557,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _error.value = "Error: ${e.message}"
                 }
             } finally {
-                _isInstalling.value = false
-                _progressMessage.value = null
+                _installState.value = InstallState(isInstalling = false)
             }
         }
     }
@@ -556,12 +576,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     fun cancelInstall() {
         installJob?.cancel()
-        _isInstalling.value = false
-        _progressMessage.value = null
+        _installState.value = InstallState(isInstalling = false)
     }
 
     private fun formatSize(bytes: Long): String {
-        if (bytes <= 0) return ""
+        if (bytes <= 0) return "0 B"
         val units = arrayOf("B", "KB", "MB", "GB", "TB")
         val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
         return String.format(Locale.US, "%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])

@@ -28,6 +28,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -49,6 +50,7 @@ import com.vrpirates.rookieonquest.ui.GameListItem
 import com.vrpirates.rookieonquest.ui.MainEvent
 import com.vrpirates.rookieonquest.ui.MainViewModel
 import com.vrpirates.rookieonquest.ui.RequiredPermission
+import com.vrpirates.rookieonquest.ui.InstallState
 import com.vrpirates.rookieonquest.ui.theme.RookieOnQuestTheme
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -75,9 +77,8 @@ class MainActivity : ComponentActivity() {
 fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val games by viewModel.games.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
-    val isInstalling by viewModel.isInstalling.collectAsState()
+    val installState by viewModel.installState.collectAsState()
     val error by viewModel.error.collectAsState()
-    val progressMessage by viewModel.progressMessage.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val missingPermissions by viewModel.missingPermissions.collectAsState()
     val alphabetInfo by viewModel.alphabetInfo.collectAsState()
@@ -294,13 +295,13 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                             Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
                         }
                         IconButton(
-                            onClick = { if (!isInstalling && missingPermissions?.isEmpty() == true) viewModel.refreshData() },
-                            enabled = !isInstalling && missingPermissions?.isEmpty() == true && !isUpdateDialogShowing && !isUpdateDownloading
+                            onClick = { if (!installState.isInstalling && missingPermissions?.isEmpty() == true) viewModel.refreshData() },
+                            enabled = !installState.isInstalling && missingPermissions?.isEmpty() == true && !isUpdateDialogShowing && !isUpdateDownloading
                         ) {
                             Icon(
                                 Icons.Default.Refresh, 
                                 contentDescription = "Refresh", 
-                                tint = if (isInstalling || missingPermissions?.isNotEmpty() == true || isUpdateDialogShowing || isUpdateDownloading) Color.DarkGray else Color.White
+                                tint = if (installState.isInstalling || missingPermissions?.isNotEmpty() == true || isUpdateDialogShowing || isUpdateDownloading) Color.DarkGray else Color.White
                             )
                         }
                     },
@@ -315,7 +316,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                     placeholder = { Text("Search games...", color = Color.Gray) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray) },
                     singleLine = true,
-                    enabled = !isInstalling && missingPermissions?.isEmpty() == true && !isUpdateDialogShowing && !isUpdateDownloading,
+                    enabled = !installState.isInstalling && missingPermissions?.isEmpty() == true && !isUpdateDialogShowing && !isUpdateDownloading,
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color(0xFF0A0A0A),
                         unfocusedContainerColor = Color(0xFF0A0A0A),
@@ -345,7 +346,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 }
                 isUpdateDownloading -> {
                     InstallationOverlay(
-                        progressMessage = updateProgress,
+                        installState = InstallState(isInstalling = true, message = updateProgress, progress = -1f),
                         onCancel = { /* Locked during update */ }
                     )
                 }
@@ -371,7 +372,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                 if (games.isNotEmpty() && searchQuery.isEmpty()) {
                                     AlphabetIndexer(
                                         alphabetInfo = alphabetInfo,
-                                        isInstalling = isInstalling,
+                                        isInstalling = installState.isInstalling,
                                         onLetterClick = { index ->
                                             coroutineScope.launch { listState.scrollToItem(index) }
                                         }
@@ -387,18 +388,18 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                     ) { game ->
                                         GameListItem(
                                             game = game,
-                                            onInstallClick = { if (!isInstalling) viewModel.installGame(game.packageName) },
+                                            onInstallClick = { if (!installState.isInstalling) viewModel.installGame(game.packageName) },
                                             onUninstallClick = { viewModel.uninstallGame(game.packageName) },
-                                            onDownloadOnlyClick = { if (!isInstalling) viewModel.installGame(game.packageName, downloadOnly = true) }
+                                            onDownloadOnlyClick = { if (!installState.isInstalling) viewModel.installGame(game.packageName, downloadOnly = true) }
                                         )
                                     }
                                 }
                             }
                         }
                         
-                        if (isInstalling) {
+                        if (installState.isInstalling) {
                             InstallationOverlay(
-                                progressMessage = progressMessage,
+                                installState = installState,
                                 onCancel = { viewModel.cancelInstall() }
                             )
                         }
@@ -437,26 +438,79 @@ fun ErrorScreen(message: String, onRetry: () -> Unit) {
 }
 
 @Composable
-fun InstallationOverlay(progressMessage: String?, onCancel: () -> Unit) {
-    Surface(modifier = Modifier.fillMaxSize(), color = Color.Black.copy(alpha = 0.9f)) {
+fun InstallationOverlay(installState: InstallState, onCancel: () -> Unit) {
+    Surface(modifier = Modifier.fillMaxSize(), color = Color.Black.copy(alpha = 0.92f)) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
-            modifier = Modifier.padding(32.dp)
+            modifier = Modifier.padding(32.dp).fillMaxWidth()
         ) {
-            CircularProgressIndicator(modifier = Modifier.size(64.dp), color = Color(0xFF3498db))
-            Spacer(modifier = Modifier.height(24.dp))
-            progressMessage?.let {
-                Text(text = it, style = MaterialTheme.typography.titleMedium, color = Color.White, textAlign = TextAlign.Center)
-            }
+            val animatedProgress by animateFloatAsState(
+                targetValue = if (installState.progress >= 0f) installState.progress else 0f,
+                label = "progress"
+            )
+
+            Text(
+                text = installState.gameName ?: "Processing",
+                style = MaterialTheme.typography.headlineSmall,
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+            
             Spacer(modifier = Modifier.height(32.dp))
-            if (progressMessage?.contains("update", ignoreCase = true) == false) {
+            
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
+                if (installState.progress < 0f) {
+                    CircularProgressIndicator(modifier = Modifier.size(64.dp), color = Color(0xFF3498db))
+                } else {
+                    LinearProgressIndicator(
+                        progress = animatedProgress,
+                        modifier = Modifier.fillMaxWidth().height(12.dp).clip(RoundedCornerShape(6.dp)),
+                        color = Color(0xFF3498db),
+                        trackColor = Color.DarkGray
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            installState.message?.let {
+                Text(
+                    text = it, 
+                    style = MaterialTheme.typography.bodyLarge, 
+                    color = Color.White, 
+                    textAlign = TextAlign.Center,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            
+            if (installState.currentSize != null && installState.totalSize != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "${installState.currentSize} / ${installState.totalSize}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            } else if (installState.progress >= 0f) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "${(installState.progress * 100).toInt()}%",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
+
+            Spacer(modifier = Modifier.height(48.dp))
+            
+            if (installState.message?.contains("update", ignoreCase = true) == false) {
                 Button(
                     onClick = onCancel,
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFCF6679)),
-                    shape = RoundedCornerShape(4.dp)
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier.height(48.dp).fillMaxWidth(0.7f)
                 ) {
-                    Text("CANCEL INSTALLATION", color = Color.White)
+                    Text("CANCEL INSTALLATION", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             }
         }

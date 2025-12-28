@@ -10,12 +10,14 @@ This document outlines the strategic priorities for the project, categorized by 
 | :--- | :--- |
 | **Extraction Resilience** | Implemented state markers and cleanup to fix interrupted extraction issues. (#11) |
 | **Storage Validation** | Added pre-flight disk space checks using `StatFs` to prevent mid-download failures. |
+| **Installed Version Tracking** | Compare `versionCode` against local `PackageInfo` to display "Update Available" badges. |
 | **Silent Install Flow** | Fixed post-extraction installation using `FileProvider`. (#5) |
 | **Download Resumption** | Implemented HTTP `Range` headers for partial downloads. (#8) |
 | **Intelligent Sorting** | Added fast alphabetical indexing with custom symbol handling. |
 | **Metadata Caching** | Local Room database for game sizes and metadata persistence. (#6) |
 | **Auto-Update System** | GitHub API integration for in-app updates and changelogs. (#10) |
 | **Advanced Settings** | Options for APK retention and "Download Only" workflows. (#7, #9) |
+| **Unified Progress UI** | Reactive progress indicators for the entire Download → Extract → Install lifecycle. |
 
 ---
 
@@ -27,11 +29,11 @@ This document outlines the strategic priorities for the project, categorized by 
 - [x] **Pre-Flight Storage Checks:** Disk space validation using `StatFs` before initiating downloads.
 
 ### 📦 Package Management
-- [ ] **Update Detection:** Compare remote `versionCode` with local `PackageInfo` to provide real-time "Update Available" indicators.
+- [x] **Update Detection:** Real-time "Update Available" indicators by comparing remote and local version codes.
 - [ ] **Shizuku Integration:** Implement silent, background installation to remove manual ADB/FileProvider friction.
 
 ### 🎨 Core Feedback
-- [ ] **Unified Progress Tracking:** Replace static UI elements with reactive progress indicators for the entire lifecycle (Download → Extract → Install).
+- [x] **Unified Progress Tracking:** Replace static UI elements with reactive progress indicators for the entire lifecycle (Download → Extract → Install).
 
 ---
 
