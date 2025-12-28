@@ -20,6 +20,9 @@ interface GameDao {
     @Query("UPDATE games SET sizeBytes = :size WHERE releaseName = :releaseName")
     suspend fun updateSize(releaseName: String, size: Long)
 
+    @Query("UPDATE games SET description = :description, screenshotUrlsJson = :screenshots WHERE releaseName = :releaseName")
+    suspend fun updateMetadata(releaseName: String, description: String?, screenshots: String?)
+
     @Query("DELETE FROM games")
     suspend fun clearAll()
     

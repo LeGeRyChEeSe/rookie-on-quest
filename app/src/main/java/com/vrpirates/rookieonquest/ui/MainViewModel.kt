@@ -136,8 +136,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         
         filtered.map { game ->
-            val iconFile = File(repository.iconsDir, "${game.packageName}.png")
-            val fallbackIcon = File(repository.iconsDir, "${game.packageName}.jpg")
+            // Check all possible icon locations
+            val iconLocations = listOf(
+                File(repository.iconsDir, "${game.packageName}.png"),
+                File(repository.iconsDir, "${game.packageName}.jpg"),
+                File(repository.thumbnailsDir, "${game.packageName}.png"),
+                File(repository.thumbnailsDir, "${game.packageName}.jpg"),
+                File(repository.thumbnailsDir, "${game.packageName}.jpeg")
+            )
+            
+            val iconFile = iconLocations.find { it.exists() }
             
             val installedVersion = installed[game.packageName]
             val catalogVersion = game.versionCode.toLongOrNull() ?: 0L
@@ -154,9 +162,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 installedVersion = installedVersion?.toString(),
                 packageName = game.packageName,
                 releaseName = game.releaseName,
-                iconFile = if (iconFile.exists()) iconFile else if (fallbackIcon.exists()) fallbackIcon else null,
+                iconFile = iconFile,
                 installStatus = status,
-                size = if (game.sizeBytes != null && game.sizeBytes > 0) formatSize(game.sizeBytes) else null
+                size = if (game.sizeBytes != null && game.sizeBytes > 0) formatSize(game.sizeBytes) else if (game.sizeBytes == -1L) "Error" else null,
+                description = game.description,
+                screenshotUrls = game.screenshotUrls
             )
         }
     }
@@ -202,7 +212,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (!updateAvailable) {
                     checkPermissions()
                     refreshInstalledPackages() // Initial scan
-                    startSizeFetchLoop()
+                    startMetadataFetchLoop()
                 }
             } finally {
                 _isUpdateCheckInProgress.value = false
@@ -320,7 +330,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isUpdateDialogShowing.value = false
         checkPermissions()
         refreshInstalledPackages()
-        startSizeFetchLoop()
+        startMetadataFetchLoop()
     }
 
     fun setVisibleIndices(indices: List<Int>) {
@@ -341,14 +351,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    private fun startSizeFetchLoop() {
+    private fun startMetadataFetchLoop() {
         sizeFetchJob = viewModelScope.launch(Dispatchers.Default) {
             while (true) {
                 // Pause fetching if the app is in background to save resources
                 if (!_isAppVisible.value) {
-                    Log.d(TAG, "Size fetch loop suspended (app in background)")
+                    Log.d(TAG, "Metadata fetch loop suspended (app in background)")
                     _isAppVisible.first { it }
-                    Log.d(TAG, "Size fetch loop resumed")
+                    Log.d(TAG, "Metadata fetch loop resumed")
                 }
 
                 val currentGames = _allGames.value
@@ -358,8 +368,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     continue
                 }
 
-                val needsSize = currentGames.filter { it.sizeBytes == null }
-                if (needsSize.isEmpty()) {
+                val needsData = currentGames.filter { it.sizeBytes == null || (it.description == null && it.screenshotUrls == null) }
+                if (needsData.isEmpty()) {
                     priorityUpdateChannel.receive()
                     continue
                 }
@@ -376,20 +386,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else null
 
                 val candidates = if (searchResultPackages != null) {
-                    needsSize.filter { searchResultPackages.contains(it.packageName) }
+                    needsData.filter { searchResultPackages.contains(it.packageName) }
                 } else {
-                    needsSize
+                    needsData
                 }
 
-                // ONLY fetch sizes for games currently visible on screen
+                // ONLY fetch info for games currently visible on screen
                 val target = candidates.find { prioritizedPackages.contains(it.packageName) }
 
                 if (target != null) {
                     try {
-                        Log.d(TAG, "Fetching size for visible game: ${target.gameName}")
+                        Log.d(TAG, "Fetching metadata for visible game: ${target.gameName}")
                         repository.getGameRemoteInfo(target)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error fetching size for ${target.gameName}", e)
+                        Log.e(TAG, "Error fetching metadata for ${target.gameName}", e)
                         delay(2000)
                     }
                     
@@ -399,7 +409,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         onTimeout(100.milliseconds) { }
                     }
                 } else {
-                    // No visible games need size fetching, wait for a signal (scroll, search, etc.)
+                    // No visible games need metadata fetching, wait for a signal (scroll, search, etc.)
                     priorityUpdateChannel.receive()
                 }
             }

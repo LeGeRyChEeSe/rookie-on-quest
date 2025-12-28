@@ -11,6 +11,8 @@ data class GameEntity(
     val packageName: String,
     val versionCode: String,
     val sizeBytes: Long? = null,
+    val description: String? = null,
+    val screenshotUrlsJson: String? = null,
     val lastUpdated: Long = System.currentTimeMillis()
 )
 
@@ -19,7 +21,9 @@ fun GameEntity.toData() = GameData(
     packageName = packageName,
     versionCode = versionCode,
     releaseName = releaseName,
-    sizeBytes = sizeBytes
+    sizeBytes = sizeBytes,
+    description = description,
+    screenshotUrls = screenshotUrlsJson?.split("|")?.filter { it.isNotEmpty() }
 )
 
 fun GameData.toEntity() = GameEntity(
@@ -27,5 +31,7 @@ fun GameData.toEntity() = GameEntity(
     gameName = gameName,
     packageName = packageName,
     versionCode = versionCode,
-    sizeBytes = sizeBytes
+    sizeBytes = sizeBytes,
+    description = description,
+    screenshotUrlsJson = screenshotUrls?.joinToString("|")
 )

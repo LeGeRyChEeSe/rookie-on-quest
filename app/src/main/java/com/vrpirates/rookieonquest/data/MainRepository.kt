@@ -50,6 +50,9 @@ class MainRepository(private val context: Context) {
     private var decodedPassword: String? = null
     
     val iconsDir = File(context.filesDir, "icons").apply { if (!exists()) mkdirs() }
+    val thumbnailsDir = File(context.filesDir, "thumbnails").apply { if (!exists()) mkdirs() }
+    val notesDir = File(context.filesDir, "notes").apply { if (!exists()) mkdirs() }
+    
     private val catalogCacheFile = File(context.filesDir, "VRP-GameList.txt")
     private val tempInstallRoot = File(context.cacheDir, "install_temp")
     val downloadsDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "RookieOnQuest").apply { if (!exists()) mkdirs() }
@@ -115,10 +118,22 @@ class MainRepository(private val context: Context) {
                     }
                     val newList = CatalogParser.parse(gameListContent)
                     
-                    val existingGames = gameDao.getAllGamesList().associate { it.releaseName to it.sizeBytes }
+                    val existingData = gameDao.getAllGamesList().associate { 
+                        it.releaseName to Triple(it.sizeBytes, it.description, it.screenshotUrlsJson) 
+                    }
                     
                     val entities = newList.map { game ->
-                        game.copy(sizeBytes = existingGames[game.releaseName]).toEntity()
+                        val existing = existingData[game.releaseName]
+                        
+                        // Local description check
+                        val localNote = File(notesDir, "${game.releaseName}.txt")
+                        val description = if (localNote.exists()) localNote.readText() else existing?.second
+                        
+                        game.copy(
+                            sizeBytes = existing?.first,
+                            description = description,
+                            screenshotUrls = existing?.third?.split("|")?.filter { it.isNotEmpty() }
+                        ).toEntity()
                     }
                     
                     gameDao.insertGames(entities)
@@ -136,7 +151,8 @@ class MainRepository(private val context: Context) {
         builder.get().use { sevenZFile ->
             var entry = sevenZFile.nextEntry
             while (entry != null) {
-                if (entry.name.endsWith("VRP-GameList.txt", ignoreCase = true)) {
+                val entryName = entry.name.lowercase()
+                if (entryName.endsWith("vrp-gamelist.txt")) {
                     val out = java.io.ByteArrayOutputStream()
                     val buffer = ByteArray(8192)
                     var bytesRead: Int
@@ -146,20 +162,36 @@ class MainRepository(private val context: Context) {
                     val content = out.toString("UTF-8")
                     catalogCacheFile.writeText(content)
                     onGameListFound(content)
-                } else if (entry.name.endsWith(".png", ignoreCase = true) || entry.name.endsWith(".jpg", ignoreCase = true)) {
+                } else if (entryName.contains("/thumbnails/")) {
+                    val fileName = entry.name.substringAfterLast("/")
+                    if (fileName.isNotEmpty()) {
+                        val targetFile = File(thumbnailsDir, fileName)
+                        saveEntryToFile(sevenZFile, targetFile)
+                    }
+                } else if (entryName.contains("/notes/")) {
+                    val fileName = entry.name.substringAfterLast("/")
+                    if (fileName.isNotEmpty()) {
+                        val targetFile = File(notesDir, fileName)
+                        saveEntryToFile(sevenZFile, targetFile)
+                    }
+                } else if (entryName.endsWith(".png") || entryName.endsWith(".jpg")) {
                     val fileName = entry.name.substringAfterLast("/")
                     val iconFile = File(iconsDir, fileName)
                     if (!iconFile.exists()) {
-                        FileOutputStream(iconFile).use { out ->
-                            val buffer = ByteArray(8192)
-                            var bytesRead: Int
-                            while (sevenZFile.read(buffer).also { bytesRead = it } != -1) {
-                                out.write(buffer, 0, bytesRead)
-                            }
-                        }
+                        saveEntryToFile(sevenZFile, iconFile)
                     }
                 }
                 entry = sevenZFile.nextEntry
+            }
+        }
+    }
+
+    private fun saveEntryToFile(sevenZFile: SevenZFile, targetFile: File) {
+        FileOutputStream(targetFile).use { out ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (sevenZFile.read(buffer).also { bytesRead = it } != -1) {
+                out.write(buffer, 0, bytesRead)
             }
         }
     }
@@ -189,15 +221,21 @@ class MainRepository(private val context: Context) {
         }
     }
 
-    suspend fun getGameRemoteInfo(game: GameData): Pair<List<String>, Long> = withContext(Dispatchers.IO) {
+    suspend fun getGameRemoteInfo(game: GameData): Triple<List<String>, Long, Map<String, Any?>> = withContext(Dispatchers.IO) {
         val config = cachedConfig ?: throw Exception("Config not loaded")
         val hash = md5(game.releaseName + "\n")
         val sanitizedBase = if (config.baseUri.endsWith("/")) config.baseUri else "${config.baseUri}/"
         val dirUrl = "$sanitizedBase$hash/"
 
+        val segments = mutableListOf<String>()
+        val screenshotUrls = mutableListOf<String>()
+        
+        // Use local metadata if available
+        val localNote = File(notesDir, "${game.releaseName}.txt")
+        var description: String? = if (localNote.exists()) localNote.readText() else game.description
+
         try {
             val request = Request.Builder().url(dirUrl).header("User-Agent", "rclone/v1.72.1").build()
-            val segments = mutableListOf<String>()
             okHttpClient.newCall(request).execute().use { response ->
                 if (response.code == 404) {
                     gameDao.updateSize(game.releaseName, -1L)
@@ -206,9 +244,36 @@ class MainRepository(private val context: Context) {
                 if (!response.isSuccessful) throw Exception("Mirror error: ${response.code}")
                 
                 val html = response.body?.string() ?: ""
-                val matcher = java.util.regex.Pattern.compile("href\\s*=\\s*\"([^\"]+\\.(7z\\.\\d{3}|apk))\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html)
-                while (matcher.find()) {
-                    matcher.group(1)?.let { segments.add(it) }
+                
+                // Extract install segments
+                val segmentMatcher = java.util.regex.Pattern.compile("href\\s*=\\s*\"([^\"]+\\.(7z\\.\\d{3}|apk))\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html)
+                while (segmentMatcher.find()) {
+                    segmentMatcher.group(1)?.let { segments.add(it) }
+                }
+
+                // Extract screenshots ( gameplay images found on mirror )
+                val imgMatcher = java.util.regex.Pattern.compile("href\\s*=\\s*\"([^\"]+\\.(jpg|png|jpeg))\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html)
+                while (imgMatcher.find()) {
+                    val imgName = imgMatcher.group(1) ?: continue
+                    // Skip images that are likely icons/thumbnails (contain package name)
+                    if (!imgName.contains(game.packageName, ignoreCase = true)) {
+                        screenshotUrls.add(dirUrl + imgName)
+                    }
+                }
+
+                // Extract description from remote notes.txt if local is missing
+                if (description == null && html.contains("notes.txt", ignoreCase = true)) {
+                    val notesUrl = dirUrl + "notes.txt"
+                    try {
+                        val notesRequest = Request.Builder().url(notesUrl).header("User-Agent", "rclone/v1.72.1").build()
+                        okHttpClient.newCall(notesRequest).execute().use { notesResponse ->
+                            if (notesResponse.isSuccessful) {
+                                description = notesResponse.body?.string()?.trim()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to fetch remote notes.txt for ${game.gameName}")
+                    }
                 }
             }
             segments.sort()
@@ -227,7 +292,9 @@ class MainRepository(private val context: Context) {
             }.awaitAll().sum()
             
             gameDao.updateSize(game.releaseName, totalSize)
-            segments to totalSize
+            gameDao.updateMetadata(game.releaseName, description, screenshotUrls.joinToString("|"))
+            
+            Triple(segments, totalSize, mapOf("description" to description, "screenshots" to screenshotUrls))
         } catch (e: Exception) {
             if (e.message?.contains("404") == true) {
                  gameDao.updateSize(game.releaseName, -1L)
@@ -261,7 +328,7 @@ class MainRepository(private val context: Context) {
         
         onProgress("Connecting to mirror...", 0.05f, 0, 0)
 
-        val (segments, totalBytes) = getGameRemoteInfo(game)
+        val (segments, totalBytes, _) = getGameRemoteInfo(game)
         if (segments.isEmpty()) throw Exception("No installable files found")
 
         // Pre-flight space check
