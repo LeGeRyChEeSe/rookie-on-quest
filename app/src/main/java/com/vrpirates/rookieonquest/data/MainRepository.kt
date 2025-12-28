@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
+import android.os.StatFs
 import android.util.Base64
 import android.util.Log
 import com.vrpirates.rookieonquest.logic.CatalogParser
@@ -235,6 +236,20 @@ class MainRepository(private val context: Context) {
         }
     }
 
+    private fun checkAvailableSpace(requiredBytes: Long) {
+        val stat = StatFs(context.cacheDir.path)
+        
+        // SIMULATION: Set to 50MB to test low space cases
+        // val availableBytes = stat.availableBlocksLong * stat.blockSizeLong 
+        // val availableBytes = 50L * 1024 * 1024 // FORCE 50MB FOR TESTING
+        
+        if (availableBytes < requiredBytes) {
+            val requiredMb = requiredBytes / (1024 * 1024)
+            val availableMb = availableBytes / (1024 * 1024)
+            throw Exception("Insufficient storage space. Need ${requiredMb}MB, but only ${availableMb}MB available.")
+        }
+    }
+
     suspend fun installGame(
         game: GameData, 
         keepApk: Boolean = false,
@@ -251,6 +266,11 @@ class MainRepository(private val context: Context) {
 
         val (segments, totalBytes) = getGameRemoteInfo(game)
         if (segments.isEmpty()) throw Exception("No installable files found")
+
+        // Pre-flight space check
+        val isSevenZ = segments.any { it.contains(".7z") }
+        val multiplier = if (isSevenZ) 2.5 else 1.2
+        checkAvailableSpace((totalBytes * multiplier).toLong())
 
         val gameTempDir = File(tempInstallRoot, hash)
         if (!gameTempDir.exists()) gameTempDir.mkdirs()
@@ -277,77 +297,103 @@ class MainRepository(private val context: Context) {
                 .header("Range", "bytes=$existingSize-")
                 .build()
 
-            okHttpClient.newCall(segRequest).execute().use { response ->
-                if (response.code == 416) {
-                    // Already done
-                } else {
-                    if (!response.isSuccessful) throw Exception("Failed to download $seg: ${response.code}")
-                    val isResume = response.code == 206
-                    val body = response.body ?: throw Exception("Empty body")
-                    
-                    body.byteStream().use { input ->
-                        FileOutputStream(localFile, isResume).use { output ->
-                            val buffer = ByteArray(8192 * 8)
-                            var bytesRead: Int
-                            while (input.read(buffer).also { bytesRead = it } != -1) {
-                                ensureActive()
-                                output.write(buffer, 0, bytesRead)
-                                totalBytesDownloaded += bytesRead
-                                
-                                val overallProgress = if (totalBytes > 0) totalBytesDownloaded.toFloat() / totalBytes else 0f
-                                onProgress(
-                                    "Downloading ${game.gameName} (Part ${index + 1}/${segments.size})", 
-                                    overallProgress * 0.8f,
-                                    totalBytesDownloaded,
-                                    totalBytes
-                                ) 
+            try {
+                okHttpClient.newCall(segRequest).execute().use { response ->
+                    if (response.code == 416) {
+                        // Already done or range not satisfiable
+                    } else {
+                        if (!response.isSuccessful) throw Exception("Failed to download $seg: ${response.code}")
+                        val isResume = response.code == 206
+                        val body = response.body ?: throw Exception("Empty body for $seg")
+                        
+                        body.byteStream().use { input ->
+                            FileOutputStream(localFile, isResume).use { output ->
+                                val buffer = ByteArray(8192 * 8)
+                                var bytesRead: Int
+                                while (input.read(buffer).also { bytesRead = it } != -1) {
+                                    ensureActive()
+                                    output.write(buffer, 0, bytesRead)
+                                    totalBytesDownloaded += bytesRead
+                                    
+                                    val overallProgress = if (totalBytes > 0) totalBytesDownloaded.toFloat() / totalBytes else 0f
+                                    onProgress(
+                                        "Downloading ${game.gameName} (Part ${index + 1}/${segments.size})", 
+                                        overallProgress * 0.8f,
+                                        totalBytesDownloaded,
+                                        totalBytes
+                                    ) 
+                                }
                             }
                         }
                     }
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error downloading segment $seg", e)
+                throw Exception("Download failed: ${e.message ?: "Unknown error"}")
             }
         }
 
         ensureActive()
-        onProgress("Merging files...", 0.85f, totalBytes, totalBytes)
-        val extractionDir = File(gameTempDir, "extracted").apply { if (exists()) deleteRecursively(); mkdirs() }
-        
-        if (localPaths.size == 1 && localPaths[0].name.endsWith(".apk", true)) {
-            localPaths[0].copyTo(File(extractionDir, localPaths[0].name), overwrite = true)
-        } else {
-            val combinedFile = File(gameTempDir, "combined.7z")
-            combinedFile.outputStream().use { out ->
-                localPaths.forEach { part -> 
-                    ensureActive()
-                    part.inputStream().use { it.copyTo(out) } 
-                }
-            }
+        val extractionDir = File(gameTempDir, "extracted").apply { if (!exists()) mkdirs() }
+        val extractionMarker = File(gameTempDir, "extraction_done.marker")
+
+        if (!extractionMarker.exists()) {
+            onProgress("Preparing extraction...", 0.82f, totalBytes, totalBytes)
             
-            onProgress("Extracting...", 0.88f, totalBytes, totalBytes)
-            ensureActive()
-            SevenZFile.builder().setFile(combinedFile).setPassword(password.toCharArray()).get().use { sevenZFile ->
-                var entry = sevenZFile.nextEntry
-                while (entry != null) {
-                    ensureActive()
-                    if (entry.name.endsWith(".apk", true) || entry.name.endsWith(".obb", true)) {
-                        val fileName = File(entry.name).name
-                        val outFile = File(extractionDir, fileName)
-                        FileOutputStream(outFile).use { out ->
-                            val buffer = ByteArray(8192 * 8)
-                            var bytesRead: Int
-                            while (sevenZFile.read(buffer).also { bytesRead = it } != -1) {
-                                out.write(buffer, 0, bytesRead)
-                            }
+            if (localPaths.size == 1 && localPaths[0].name.endsWith(".apk", true)) {
+                localPaths[0].copyTo(File(extractionDir, localPaths[0].name), overwrite = true)
+            } else {
+                val combinedFile = File(gameTempDir, "combined.7z")
+                
+                if (!combinedFile.exists() || combinedFile.length() < totalBytes) {
+                    onProgress("Merging files...", 0.85f, totalBytes, totalBytes)
+                    combinedFile.outputStream().use { out ->
+                        localPaths.forEach { part -> 
+                            ensureActive()
+                            part.inputStream().use { it.copyTo(out) } 
                         }
                     }
-                    entry = sevenZFile.nextEntry
+                }
+                
+                onProgress("Extracting...", 0.88f, totalBytes, totalBytes)
+                ensureActive()
+                try {
+                    SevenZFile.builder().setFile(combinedFile).setPassword(password.toCharArray()).get().use { sevenZFile ->
+                        var entry = sevenZFile.nextEntry
+                        while (entry != null) {
+                            ensureActive()
+                            if (entry.name.endsWith(".apk", true) || entry.name.endsWith(".obb", true)) {
+                                val fileName = File(entry.name).name
+                                val outFile = File(extractionDir, fileName)
+                                
+                                FileOutputStream(outFile).use { out ->
+                                    val buffer = ByteArray(8192 * 8)
+                                    var bytesRead: Int
+                                    while (sevenZFile.read(buffer).also { bytesRead = it } != -1) {
+                                        out.write(buffer, 0, bytesRead)
+                                    }
+                                }
+                            }
+                            entry = sevenZFile.nextEntry
+                        }
+                    }
+                    extractionMarker.createNewFile()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Extraction failed", e)
+                    extractionDir.deleteRecursively()
+                    extractionDir.mkdirs()
+                    throw Exception("Extraction failed: ${e.message ?: "Check your storage or password"}")
+                } finally {
+                    if (combinedFile.exists()) combinedFile.delete()
                 }
             }
-            if (combinedFile.exists()) combinedFile.delete()
         }
 
         val apks = extractionDir.listFiles { _, name -> name.endsWith(".apk", true) }
-        if (apks.isNullOrEmpty()) throw Exception("No APK found")
+        if (apks.isNullOrEmpty()) {
+            extractionMarker.delete()
+            throw Exception("No APK found in extracted files")
+        }
         val finalApk = apks[0]
 
         val obbs = extractionDir.listFiles { _, name -> name.endsWith(".obb", true) }
@@ -376,7 +422,11 @@ class MainRepository(private val context: Context) {
 
         onProgress("Launching installer...", 1f, totalBytes, totalBytes)
         val externalApk = File(context.getExternalFilesDir(null), finalApk.name)
-        finalApk.copyTo(externalApk, overwrite = true)
+        try {
+            finalApk.copyTo(externalApk, overwrite = true)
+        } catch (e: Exception) {
+            throw Exception("Failed to copy APK to installer directory: ${e.message}")
+        }
         
         gameTempDir.deleteRecursively()
         externalApk

@@ -511,6 +511,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val keepApk = _keepApks.value
         
         installJob?.cancel()
+        _error.value = null // Reset error state
+        
         installJob = viewModelScope.launch {
             try {
                 _isInstalling.value = true
@@ -530,6 +532,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (e: Exception) {
                 if (e !is kotlinx.coroutines.CancellationException) {
+                    Log.e(TAG, "Installation failed", e)
                     _error.value = "Error: ${e.message}"
                 }
             } finally {
