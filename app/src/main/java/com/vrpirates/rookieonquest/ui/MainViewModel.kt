@@ -37,6 +37,7 @@ sealed class MainEvent {
     object RequestInstallPermission : MainEvent()
     object RequestStoragePermission : MainEvent()
     data class ShowUpdatePopup(val release: GitHubRelease) : MainEvent()
+    data class ShowMessage(val message: String) : MainEvent()
 }
 
 enum class RequiredPermission {
@@ -518,13 +519,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun installGame(packageName: String, downloadOnly: Boolean = false) {
+    fun installGame(releaseName: String, downloadOnly: Boolean = false) {
         if (_missingPermissions.value?.isNotEmpty() == true) {
             startPermissionFlow()
             return
         }
 
-        val game = _allGames.value.find { it.packageName == packageName } ?: return
+        val game = _allGames.value.find { it.releaseName == releaseName } ?: return
         val keepApk = _keepApks.value
         
         installJob?.cancel()
@@ -534,7 +535,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 _installState.value = InstallState(
                     isInstalling = true,
-                    packageName = packageName,
+                    packageName = game.packageName,
                     gameName = game.gameName,
                     message = "Connecting..."
                 )
@@ -564,7 +565,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 if (e !is kotlinx.coroutines.CancellationException) {
                     Log.e(TAG, "Installation failed", e)
-                    _error.value = "Error: ${e.message}"
+                    val msg = e.message ?: "Unknown error"
+                    _events.emit(MainEvent.ShowMessage(msg))
+                    _error.value = "Error: $msg"
                 }
             } finally {
                 _installState.value = InstallState(isInstalling = false)

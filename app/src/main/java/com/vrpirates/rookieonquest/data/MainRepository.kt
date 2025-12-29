@@ -388,7 +388,7 @@ class MainRepository(private val context: Context) {
 
         // Pre-flight space check
         val isSevenZ = segments.any { it.contains(".7z") }
-        val multiplier = if (isSevenZ) 2.5 else 1.2
+        val multiplier = if (isSevenZ) 1.9 else 1.1
         checkAvailableSpace((totalBytes * multiplier).toLong())
 
         val gameTempDir = File(tempInstallRoot, hash)

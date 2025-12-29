@@ -160,6 +160,9 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 is MainEvent.ShowUpdatePopup -> {
                     showUpdateDialogState = event.release
                 }
+                is MainEvent.ShowMessage -> {
+                    snackbarHostState.showSnackbar(event.message)
+                }
             }
         }
     }
@@ -278,9 +281,9 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                     items(games, key = { it.packageName + it.releaseName }) { game ->
                                         GameListItem(
                                             game = game,
-                                            onInstallClick = { if (!installState.isInstalling) viewModel.installGame(game.packageName) },
+                                            onInstallClick = { if (!installState.isInstalling) viewModel.installGame(game.releaseName) },
                                             onUninstallClick = { viewModel.uninstallGame(game.packageName) },
-                                            onDownloadOnlyClick = { if (!installState.isInstalling) viewModel.installGame(game.packageName, downloadOnly = true) },
+                                            onDownloadOnlyClick = { if (!installState.isInstalling) viewModel.installGame(game.releaseName, downloadOnly = true) },
                                             isGridItem = true
                                         )
                                     }
@@ -294,9 +297,9 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                     items(games, key = { it.packageName + it.releaseName }) { game ->
                                         GameListItem(
                                             game = game,
-                                            onInstallClick = { if (!installState.isInstalling) viewModel.installGame(game.packageName) },
+                                            onInstallClick = { if (!installState.isInstalling) viewModel.installGame(game.releaseName) },
                                             onUninstallClick = { viewModel.uninstallGame(game.packageName) },
-                                            onDownloadOnlyClick = { if (!installState.isInstalling) viewModel.installGame(game.packageName, downloadOnly = true) }
+                                            onDownloadOnlyClick = { if (!installState.isInstalling) viewModel.installGame(game.releaseName, downloadOnly = true) }
                                         )
                                     }
                                 }

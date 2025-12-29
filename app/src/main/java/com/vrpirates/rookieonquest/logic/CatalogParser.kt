@@ -4,8 +4,8 @@ import com.vrpirates.rookieonquest.data.GameData
 
 object CatalogParser {
     fun parse(content: String): List<GameData> {
-        val games = mutableListOf<GameData>()
-        if (content.isBlank()) return games
+        val games = mutableMapOf<String, GameData>()
+        if (content.isBlank()) return emptyList()
 
         val lines = content.split("\r\n", "\n", "\r")
         
@@ -23,16 +23,17 @@ object CatalogParser {
             // parts[2] = PackageName
             // parts[3] = VersionCode
             if (parts.size >= 4) {
-                games.add(
-                    GameData(
+                val releaseName = parts[1].trim()
+                if (!games.containsKey(releaseName)) {
+                    games[releaseName] = GameData(
                         gameName = parts[0].trim(),
-                        releaseName = parts[1].trim(),
+                        releaseName = releaseName,
                         packageName = parts[2].trim(),
                         versionCode = parts[3].trim()
                     )
-                )
+                }
             }
         }
-        return games
+        return games.values.toList()
     }
 }
