@@ -45,6 +45,13 @@ enum class RequiredPermission {
     MANAGE_EXTERNAL_STORAGE
 }
 
+enum class FilterStatus {
+    ALL,
+    INSTALLED,
+    DOWNLOADED,
+    UPDATE_AVAILABLE
+}
+
 data class InstallState(
     val isInstalling: Boolean = false,
     val packageName: String? = null,
@@ -63,10 +70,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery
 
+    private val _selectedFilter = MutableStateFlow(FilterStatus.ALL)
+    val selectedFilter: StateFlow<FilterStatus> = _selectedFilter
+
     private val _events = MutableSharedFlow<MainEvent>()
     val events = _events.asSharedFlow()
 
     private val _installedPackages = MutableStateFlow<Map<String, Long>>(emptyMap())
+    private val _downloadedReleases = MutableStateFlow<Set<String>>(emptySet())
 
     private val _missingPermissions = MutableStateFlow<List<RequiredPermission>?>(null)
     val missingPermissions: StateFlow<List<RequiredPermission>?> = _missingPermissions
@@ -122,12 +133,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    val filterCounts: StateFlow<Map<FilterStatus, Int>> = combine(
+        _allGames,
+        _installedPackages,
+        _downloadedReleases
+    ) { list, installed, downloaded ->
+        val counts = mutableMapOf<FilterStatus, Int>()
+        counts[FilterStatus.ALL] = list.size
+        
+        var installedCount = 0
+        var updateCount = 0
+        var downloadedCount = 0
+        
+        list.forEach { game ->
+            val installedVersion = installed[game.packageName]
+            val catalogVersion = game.versionCode.toLongOrNull() ?: 0L
+            
+            if (installedVersion != null) {
+                installedCount++
+                if (catalogVersion > installedVersion) {
+                    updateCount++
+                }
+            }
+            
+            if (downloaded.contains(game.releaseName)) {
+                downloadedCount++
+            }
+        }
+        
+        counts[FilterStatus.INSTALLED] = installedCount
+        counts[FilterStatus.DOWNLOADED] = downloadedCount
+        counts[FilterStatus.UPDATE_AVAILABLE] = updateCount
+        counts
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
     val games: StateFlow<List<GameItemState>> = combine(
         _allGames, 
         _searchQuery, 
-        _installedPackages
-    ) { list, query, installed ->
-        val filtered = if (query.isBlank()) {
+        _installedPackages,
+        _downloadedReleases,
+        _selectedFilter
+    ) { list, query, installed, downloaded, filter ->
+        val filteredByQuery = if (query.isBlank()) {
             list
         } else {
             list.filter { 
@@ -136,7 +183,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         
-        filtered.map { game ->
+        filteredByQuery.mapNotNull { game ->
+            val installedVersion = installed[game.packageName]
+            val catalogVersion = game.versionCode.toLongOrNull() ?: 0L
+            
+            val status = when {
+                installedVersion == null -> InstallStatus.NOT_INSTALLED
+                catalogVersion > installedVersion -> InstallStatus.UPDATE_AVAILABLE
+                else -> InstallStatus.INSTALLED
+            }
+            
+            val isDownloaded = downloaded.contains(game.releaseName)
+
+            // Apply filter
+            when (filter) {
+                FilterStatus.INSTALLED -> if (status == InstallStatus.NOT_INSTALLED) return@mapNotNull null
+                FilterStatus.DOWNLOADED -> if (!isDownloaded) return@mapNotNull null
+                FilterStatus.UPDATE_AVAILABLE -> if (status != InstallStatus.UPDATE_AVAILABLE) return@mapNotNull null
+                FilterStatus.ALL -> {}
+            }
+
             // Check all possible icon locations
             val iconLocations = listOf(
                 File(repository.iconsDir, "${game.packageName}.png"),
@@ -148,15 +214,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             
             val iconFile = iconLocations.find { it.exists() }
             
-            val installedVersion = installed[game.packageName]
-            val catalogVersion = game.versionCode.toLongOrNull() ?: 0L
-            
-            val status = when {
-                installedVersion == null -> InstallStatus.NOT_INSTALLED
-                catalogVersion > installedVersion -> InstallStatus.UPDATE_AVAILABLE
-                else -> InstallStatus.INSTALLED
-            }
-            
             GameItemState(
                 name = game.gameName,
                 version = game.versionCode,
@@ -165,6 +222,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 releaseName = game.releaseName,
                 iconFile = iconFile,
                 installStatus = status,
+                isDownloaded = isDownloaded,
                 size = if (game.sizeBytes != null && game.sizeBytes > 0) formatSize(game.sizeBytes) else if (game.sizeBytes == -1L) "Error" else null,
                 description = game.description,
                 screenshotUrls = game.screenshotUrls
@@ -212,7 +270,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val updateAvailable = checkForAppUpdates()
                 if (!updateAvailable) {
                     checkPermissions()
-                    refreshInstalledPackages() // Initial scan
+                    refreshInstalledPackages()
+                    refreshDownloadedReleases()
                     startMetadataFetchLoop()
                 }
             } finally {
@@ -230,6 +289,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _installedPackages.value = installed
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to refresh installed packages", e)
+            }
+        }
+    }
+
+    fun refreshDownloadedReleases() {
+        viewModelScope.launch {
+            try {
+                val downloaded = withContext(Dispatchers.IO) {
+                    val dir = repository.downloadsDir
+                    if (!dir.exists()) return@withContext emptySet<String>()
+                    
+                    val games = _allGames.value
+                    if (games.isEmpty()) return@withContext emptySet<String>()
+
+                    val releaseNamesWithFolders = dir.listFiles()?.filter { it.isDirectory }?.map { it.name }?.toSet() ?: emptySet()
+                    
+                    games.filter { game ->
+                        val safeDirName = game.releaseName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+                        releaseNamesWithFolders.contains(safeDirName)
+                    }.map { it.releaseName }.toSet()
+                }
+                _downloadedReleases.value = downloaded
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to refresh downloaded releases", e)
             }
         }
     }
@@ -331,6 +414,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isUpdateDialogShowing.value = false
         checkPermissions()
         refreshInstalledPackages()
+        refreshDownloadedReleases()
         startMetadataFetchLoop()
     }
 
@@ -347,6 +431,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (visible) {
                 priorityUpdateChannel.trySend(Unit)
                 refreshInstalledPackages() // Refresh when coming back to app
+                refreshDownloadedReleases()
             }
         }
     }
@@ -434,6 +519,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) {
                     val installed = repository.getInstalledPackagesMap()
                     _installedPackages.value = installed
+                    refreshDownloadedReleases()
                     val config = repository.fetchConfig()
                     repository.syncCatalog(config.baseUri)
                 }
@@ -504,6 +590,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         priorityUpdateChannel.trySend(Unit)
     }
 
+    fun setFilter(filter: FilterStatus) {
+        _selectedFilter.value = filter
+        priorityUpdateChannel.trySend(Unit)
+    }
+
     fun startPermissionFlow() {
         isPermissionFlowActive = true
         requestNextPermission()
@@ -555,6 +646,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 
+                refreshDownloadedReleases() // Refresh after download
+
                 if (apkFile != null && !downloadOnly) {
                     if (!_isAppVisible.value) {
                         _installState.update { it.copy(message = "Ready to install. Return to app.") }

@@ -16,6 +16,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -80,6 +81,8 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val installState by viewModel.installState.collectAsState()
     val error by viewModel.error.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val selectedFilter by viewModel.selectedFilter.collectAsState()
+    val filterCounts by viewModel.filterCounts.collectAsState()
     val missingPermissions by viewModel.missingPermissions.collectAsState()
     val alphabetInfo by viewModel.alphabetInfo.collectAsState()
     val keepApks by viewModel.keepApks.collectAsState()
@@ -219,6 +222,9 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 CustomTopBar(
                     searchQuery = searchQuery,
                     onSearchQueryChange = { viewModel.setSearchQuery(it) },
+                    selectedFilter = selectedFilter,
+                    onFilterChange = { viewModel.setFilter(it) },
+                    filterCounts = filterCounts,
                     onSettingsClick = { showSettingsDialog = true },
                     onRefreshClick = { viewModel.refreshData() },
                     isRefreshing = isRefreshing,
@@ -245,7 +251,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                     }
                     else -> {
                         Row(modifier = Modifier.fillMaxSize()) {
-                            if (games.isNotEmpty() && searchQuery.isEmpty()) {
+                            if (games.isNotEmpty() && searchQuery.isEmpty() && selectedFilter == FilterStatus.ALL) {
                                 AlphabetIndexer(
                                     alphabetInfo = alphabetInfo,
                                     isInstalling = installState.isInstalling,
@@ -404,10 +410,14 @@ fun PermissionOverlay(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomTopBar(
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
+    selectedFilter: FilterStatus,
+    onFilterChange: (FilterStatus) -> Unit,
+    filterCounts: Map<FilterStatus, Int>,
     onSettingsClick: () -> Unit,
     onRefreshClick: () -> Unit,
     isRefreshing: Boolean,
@@ -455,7 +465,7 @@ fun CustomTopBar(
                 onValueChange = onSearchQueryChange,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                    .padding(horizontal = 16.dp),
                 placeholder = { Text("Search VR games...", color = Color.Gray) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray) },
                 trailingIcon = {
@@ -476,6 +486,70 @@ fun CustomTopBar(
                     unfocusedTextColor = Color.White
                 )
             )
+
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    FilterChip(
+                        selected = selectedFilter == FilterStatus.ALL,
+                        onClick = { onFilterChange(FilterStatus.ALL) },
+                        label = { Text("All (${filterCounts[FilterStatus.ALL] ?: 0})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.secondary,
+                            selectedLabelColor = Color.Black,
+                            labelColor = Color.Gray,
+                            containerColor = Color.White.copy(alpha = 0.05f)
+                        ),
+                        border = null
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = selectedFilter == FilterStatus.INSTALLED,
+                        onClick = { onFilterChange(FilterStatus.INSTALLED) },
+                        label = { Text("Installed (${filterCounts[FilterStatus.INSTALLED] ?: 0})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFF3498db),
+                            selectedLabelColor = Color.White,
+                            labelColor = Color.Gray,
+                            containerColor = Color.White.copy(alpha = 0.05f)
+                        ),
+                        border = null
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = selectedFilter == FilterStatus.DOWNLOADED,
+                        onClick = { onFilterChange(FilterStatus.DOWNLOADED) },
+                        label = { Text("Downloaded (${filterCounts[FilterStatus.DOWNLOADED] ?: 0})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFF2ecc71),
+                            selectedLabelColor = Color.White,
+                            labelColor = Color.Gray,
+                            containerColor = Color.White.copy(alpha = 0.05f)
+                        ),
+                        border = null
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = selectedFilter == FilterStatus.UPDATE_AVAILABLE,
+                        onClick = { onFilterChange(FilterStatus.UPDATE_AVAILABLE) },
+                        label = { Text("Updates (${filterCounts[FilterStatus.UPDATE_AVAILABLE] ?: 0})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFFf1c40f),
+                            selectedLabelColor = Color.Black,
+                            labelColor = Color.Gray,
+                            containerColor = Color.White.copy(alpha = 0.05f)
+                        ),
+                        border = null
+                    )
+                }
+            }
         }
     }
 }

@@ -55,6 +55,7 @@ data class GameItemState(
     val releaseName: String,
     val iconFile: File?,
     val installStatus: InstallStatus = InstallStatus.NOT_INSTALLED,
+    val isDownloaded: Boolean = false,
     val size: String? = null,
     val description: String? = null,
     val screenshotUrls: List<String>? = null
@@ -174,6 +175,16 @@ fun GameListItem(
                                 color = Color.Gray,
                                 modifier = Modifier.padding(start = 4.dp),
                                 fontSize = 11.sp
+                            )
+                        }
+
+                        if (game.isDownloaded) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                Icons.Default.Download,
+                                contentDescription = "Downloaded",
+                                tint = Color(0xFF2ecc71),
+                                modifier = Modifier.size(12.dp)
                             )
                         }
                     }
