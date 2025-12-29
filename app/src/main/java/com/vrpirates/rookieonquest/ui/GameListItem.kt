@@ -28,12 +28,16 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import coil.size.Precision
 import java.io.File
 
 enum class InstallStatus {
@@ -68,6 +72,7 @@ fun GameListItem(
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
     val isPressed by interactionSource.collectIsPressedAsState()
+    val context = LocalContext.current
     
     val scale by animateFloatAsState(
         targetValue = if (isPressed) 0.98f else if (isHovered) 1.02f else 1f,
@@ -91,7 +96,7 @@ fun GameListItem(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 6.dp)
+            .padding(horizontal = 4.dp, vertical = 4.dp)
             .scale(scale)
             .shadow(
                 elevation = if (isHovered) 8.dp else 2.dp,
@@ -114,17 +119,23 @@ fun GameListItem(
                     .fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Game Icon - Reduced size for list view to save horizontal space
                 Box(
                     modifier = Modifier
-                        .size(if (isGridItem) 64.dp else 60.dp)
+                        .size(if (isGridItem) 56.dp else 60.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(Color.Black)
                         .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     AsyncImage(
-                        model = game.iconFile,
+                        model = ImageRequest.Builder(context)
+                            .data(game.iconFile)
+                            .crossfade(true)
+                            .size(120, 120) // Redimensionnement pour libérer de la RAM
+                            .precision(Precision.EXACT)
+                            .diskCachePolicy(CachePolicy.ENABLED)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .build(),
                         contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
@@ -140,60 +151,44 @@ fun GameListItem(
                         text = game.name, 
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
+                            fontSize = 13.sp
                         ),
                         color = Color.White,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                     
-                    Spacer(modifier = Modifier.height(2.dp))
-                    
-                    // Version & Size Row
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (game.installStatus == InstallStatus.UPDATE_AVAILABLE && game.installedVersion != null) {
-                            Text(
-                                text = "v${game.installedVersion}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray,
-                                textDecoration = TextDecoration.LineThrough,
-                                maxLines = 1
-                            )
-                            Text(text = "→", style = MaterialTheme.typography.bodySmall, color = Color.White, modifier = Modifier.padding(horizontal = 2.dp))
-                        }
                         Text(
                             text = "v${game.version}", 
                             style = MaterialTheme.typography.bodySmall,
                             color = if (game.installStatus == InstallStatus.UPDATE_AVAILABLE) Color(0xFF2ecc71) else Color(0xFF3498db),
                             fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Visible
+                            fontSize = 11.sp
                         )
                         
-                        if (game.size != null && !isGridItem) {
+                        if (game.size != null) {
                             Text(
                                 text = " • ${game.size}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.Gray,
                                 modifier = Modifier.padding(start = 4.dp),
-                                maxLines = 1
+                                fontSize = 11.sp
                             )
                         }
                     }
                 }
                 
-                // Action Buttons Section
                 if (!isGridItem) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        // More compact uninstall/download button
                         val actionIcon = if (game.installStatus == InstallStatus.INSTALLED || game.installStatus == InstallStatus.UPDATE_AVAILABLE) Icons.Default.Delete else Icons.Default.Download
                         val actionTint = if (game.installStatus == InstallStatus.INSTALLED || game.installStatus == InstallStatus.UPDATE_AVAILABLE) Color(0xFFCF6679) else Color.Gray
                         
                         IconButton(
                             onClick = { if (game.installStatus == InstallStatus.NOT_INSTALLED) onDownloadOnlyClick() else onUninstallClick() },
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(32.dp)
                         ) {
-                            Icon(actionIcon, contentDescription = null, tint = actionTint, modifier = Modifier.size(20.dp))
+                            Icon(actionIcon, contentDescription = null, tint = actionTint, modifier = Modifier.size(18.dp))
                         }
                         
                         Spacer(modifier = Modifier.width(4.dp))
@@ -207,17 +202,10 @@ fun GameListItem(
                             ),
                             shape = RoundedCornerShape(6.dp),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                            modifier = Modifier.height(32.dp).widthIn(min = 70.dp)
+                            modifier = Modifier.height(30.dp).widthIn(min = 60.dp)
                         ) {
-                            Text(buttonText, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                            Text(buttonText, fontSize = 9.sp, fontWeight = FontWeight.Black)
                         }
-                        
-                        Icon(
-                            imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                            contentDescription = null,
-                            tint = Color.Gray,
-                            modifier = Modifier.padding(start = 4.dp).size(20.dp)
-                        )
                     }
                 }
             }
@@ -234,12 +222,16 @@ fun GameListItem(
                     if (!game.screenshotUrls.isNullOrEmpty()) {
                         LazyRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth().height(150.dp)
+                            modifier = Modifier.fillMaxWidth().height(140.dp)
                         ) {
                             items(game.screenshotUrls) { url ->
                                 Card(shape = RoundedCornerShape(6.dp)) {
                                     AsyncImage(
-                                        model = url,
+                                        model = ImageRequest.Builder(context)
+                                            .data(url)
+                                            .size(480, 270) // Taille réduite pour les screenshots
+                                            .crossfade(true)
+                                            .build(),
                                         contentDescription = null,
                                         modifier = Modifier.aspectRatio(16/9f).fillMaxHeight(),
                                         contentScale = ContentScale.Crop
@@ -260,7 +252,8 @@ fun GameListItem(
                                 text = game.description,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.LightGray,
-                                lineHeight = 18.sp,
+                                lineHeight = 16.sp,
+                                fontSize = 11.sp,
                                 modifier = Modifier.padding(10.dp)
                             )
                         }
@@ -268,13 +261,19 @@ fun GameListItem(
                     
                     if (isGridItem) {
                         Spacer(modifier = Modifier.height(12.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                             TextButton(onClick = { if (game.installStatus == InstallStatus.NOT_INSTALLED) onDownloadOnlyClick() else onUninstallClick() }) {
-                                Text(if (game.installStatus == InstallStatus.NOT_INSTALLED) "Download" else "Uninstall", color = if (game.installStatus == InstallStatus.NOT_INSTALLED) Color.Gray else Color(0xFFCF6679))
+                                Text(if (game.installStatus == InstallStatus.NOT_INSTALLED) "Download" else "Uninstall", color = if (game.installStatus == InstallStatus.NOT_INSTALLED) Color.Gray else Color(0xFFCF6679), fontSize = 12.sp)
                             }
                             Spacer(modifier = Modifier.width(8.dp))
-                            Button(onClick = onInstallClick, enabled = isEnabled, colors = ButtonDefaults.buttonColors(containerColor = buttonColor)) {
-                                Text(buttonText, fontWeight = FontWeight.Bold)
+                            Button(
+                                onClick = onInstallClick, 
+                                enabled = isEnabled, 
+                                colors = ButtonDefaults.buttonColors(containerColor = buttonColor),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.height(36.dp)
+                            ) {
+                                Text(buttonText, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
                         }
                     }

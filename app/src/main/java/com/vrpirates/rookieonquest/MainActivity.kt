@@ -22,6 +22,10 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.items
+import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -86,7 +90,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val updateProgress by viewModel.updateProgress.collectAsState()
     
     val listState = rememberLazyListState()
-    val gridState = rememberLazyGridState()
+    val staggeredGridState = rememberLazyStaggeredGridState()
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
@@ -95,14 +99,16 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     var showSettingsDialog by remember { mutableStateOf(false) }
 
     // Update visible indices for priority fetching
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.layoutInfo.visibleItemsInfo }
-            .collect { visibleItems ->
-                viewModel.setVisibleIndices(visibleItems.map { it.index })
-            }
+    LaunchedEffect(listState, staggeredGridState) {
+        snapshotFlow { 
+            if (listState.layoutInfo.visibleItemsInfo.isNotEmpty()) listState.layoutInfo.visibleItemsInfo.map { it.index }
+            else staggeredGridState.layoutInfo.visibleItemsInfo.map { it.index }
+        }
+        .collect { indices ->
+            viewModel.setVisibleIndices(indices)
+        }
     }
 
-    // Handle events from ViewModel
     LaunchedEffect(Unit) {
         viewModel.events.collectLatest { event ->
             when (event) {
@@ -158,7 +164,6 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         }
     }
 
-    // Lifecycle observer
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -179,7 +184,6 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         }
     }
 
-    // Dialogs
     val release = showUpdateDialogState
     if (release != null) {
         UpdateDialog(
@@ -230,10 +234,12 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         onCancel = {}
                     )
                     missingPermissions == null -> LoadingScreen("Checking permissions...")
-                    missingPermissions!!.isNotEmpty() -> PermissionOverlay(
-                        missingPermissions = missingPermissions!!,
-                        onGrantClick = { viewModel.startPermissionFlow() }
-                    )
+                    missingPermissions!!.isNotEmpty() -> {
+                        PermissionOverlay(
+                            missingPermissions = missingPermissions!!,
+                            onGrantClick = { viewModel.startPermissionFlow() }
+                        )
+                    }
                     else -> {
                         Row(modifier = Modifier.fillMaxSize()) {
                             if (games.isNotEmpty() && searchQuery.isEmpty()) {
@@ -242,7 +248,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                     isInstalling = installState.isInstalling,
                                     onLetterClick = { index ->
                                         coroutineScope.launch { 
-                                            if (isWide) gridState.scrollToItem(index)
+                                            if (isWide) staggeredGridState.scrollToItem(index)
                                             else listState.scrollToItem(index) 
                                         }
                                     }
@@ -261,10 +267,12 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                     ErrorScreen(error!!, onRetry = { viewModel.refreshData() })
                                 }
                             } else if (isWide) {
-                                LazyVerticalGrid(
-                                    columns = GridCells.Adaptive(minSize = 350.dp),
-                                    state = gridState,
-                                    contentPadding = PaddingValues(16.dp),
+                                LazyVerticalStaggeredGrid(
+                                    columns = StaggeredGridCells.Fixed(3),
+                                    state = staggeredGridState,
+                                    contentPadding = PaddingValues(12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalItemSpacing = 8.dp,
                                     modifier = Modifier.weight(1f).fillMaxHeight()
                                 ) {
                                     items(games, key = { it.packageName + it.releaseName }) { game ->
@@ -295,7 +303,6 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                             }
                         }
                         
-                        // Overlays
                         if (installState.isInstalling) {
                             InstallationOverlay(
                                 installState = installState,
@@ -308,6 +315,87 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun PermissionOverlay(
+    missingPermissions: List<RequiredPermission>,
+    onGrantClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color.Black, Color(0xFF1A1A1A))
+                )
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.8f)
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(
+                imageVector = Icons.Default.Security,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.size(100.dp)
+            )
+            Spacer(modifier = Modifier.height(32.dp))
+            Text(
+                text = "Action Required",
+                style = MaterialTheme.typography.headlineLarge,
+                color = Color.White,
+                fontWeight = FontWeight.Black
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Rookie On Quest needs some permissions to sideload games directly to your headset.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color.LightGray,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(48.dp))
+            
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                missingPermissions.forEach { permission ->
+                    val (title, icon) = when (permission) {
+                        RequiredPermission.INSTALL_UNKNOWN_APPS -> "Install Unknown Apps" to Icons.Default.SystemUpdate
+                        RequiredPermission.MANAGE_EXTERNAL_STORAGE -> "Manage External Storage" to Icons.Default.Storage
+                    }
+                    
+                    Surface(
+                        color = Color.White.copy(alpha = 0.05f),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(icon, contentDescription = null, tint = Color.Gray)
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Text(title, color = Color.White, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(48.dp))
+            
+            Button(
+                onClick = onGrantClick,
+                modifier = Modifier.height(64.dp).fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("GRANT PERMISSIONS", fontWeight = FontWeight.Black, fontSize = 18.sp)
             }
         }
     }
@@ -649,87 +737,6 @@ fun AlphabetIndexer(
                         modifier = Modifier.scale(scale)
                     )
                 }
-            }
-        }
-    }
-}
-
-@Composable
-fun PermissionOverlay(
-    missingPermissions: List<RequiredPermission>,
-    onGrantClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(Color.Black, Color(0xFF1A1A1A))
-                )
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth(0.8f)
-                .padding(32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Icon(
-                imageVector = Icons.Default.Security,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.size(100.dp)
-            )
-            Spacer(modifier = Modifier.height(32.dp))
-            Text(
-                text = "Action Required",
-                style = MaterialTheme.typography.headlineLarge,
-                color = Color.White,
-                fontWeight = FontWeight.Black
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "Rookie On Quest needs some permissions to sideload games directly to your headset.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = Color.LightGray,
-                textAlign = TextAlign.Center
-            )
-            Spacer(modifier = Modifier.height(48.dp))
-            
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                missingPermissions.forEach { permission ->
-                    val (title, icon) = when (permission) {
-                        RequiredPermission.INSTALL_UNKNOWN_APPS -> "Install Unknown Apps" to Icons.Default.SystemUpdate
-                        RequiredPermission.MANAGE_EXTERNAL_STORAGE -> "Manage External Storage" to Icons.Default.Storage
-                    }
-                    
-                    Surface(
-                        color = Color.White.copy(alpha = 0.05f),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(icon, contentDescription = null, tint = Color.Gray)
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Text(title, color = Color.White, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-            }
-            
-            Spacer(modifier = Modifier.height(48.dp))
-            
-            Button(
-                onClick = onGrantClick,
-                modifier = Modifier.height(64.dp).fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text("GRANT PERMISSIONS", fontWeight = FontWeight.Black, fontSize = 18.sp)
             }
         }
     }
