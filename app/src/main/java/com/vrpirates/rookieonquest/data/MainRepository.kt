@@ -2,6 +2,7 @@ package com.vrpirates.rookieonquest.data
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
@@ -55,7 +56,7 @@ class MainRepository(private val context: Context) {
     
     private val catalogCacheFile = File(context.filesDir, "VRP-GameList.txt")
     private val tempInstallRoot = File(context.cacheDir, "install_temp")
-    val downloadsDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "RookieOnQuest").apply { if (!exists()) mkdirs() }
+    val downloadsDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "RookieOnQuest")
 
     fun getAllGamesFlow(): Flow<List<GameData>> = gameDao.getAllGames().map { entities ->
         entities.map { it.toData() }
@@ -464,12 +465,26 @@ class MainRepository(private val context: Context) {
         
         if (downloadOnly || keepApk) {
             onProgress("Saving files...", 0.92f, totalBytes, totalBytes)
-            val gameDownloadDir = File(downloadsDir, game.releaseName.replace(Regex("[^a-zA-Z0-9.-]"), "_"))
-            if (!gameDownloadDir.exists()) gameDownloadDir.mkdirs()
-            
-            finalApk.copyTo(File(gameDownloadDir, finalApk.name), overwrite = true)
-            obbs?.forEach { obb ->
-                obb.copyTo(File(gameDownloadDir, obb.name), overwrite = true)
+            try {
+                if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                val safeDirName = game.releaseName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+                val gameDownloadDir = File(downloadsDir, safeDirName)
+                if (!gameDownloadDir.exists()) gameDownloadDir.mkdirs()
+                
+                // Use a better name for the saved APK
+                val safeGameName = game.gameName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+                val targetApk = File(gameDownloadDir, "${safeGameName}_v${game.versionCode}.apk")
+                
+                copyFileWithScanner(finalApk, targetApk)
+                
+                obbs?.forEach { obb ->
+                    val targetObb = File(gameDownloadDir, obb.name)
+                    copyFileWithScanner(obb, targetObb)
+                }
+                Log.d(TAG, "Successfully saved files to ${gameDownloadDir.absolutePath}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save files to downloads", e)
+                if (downloadOnly) throw e
             }
         }
 
@@ -494,6 +509,20 @@ class MainRepository(private val context: Context) {
         
         gameTempDir.deleteRecursively()
         externalApk
+    }
+
+    private fun copyFileWithScanner(source: File, target: File) {
+        try {
+            source.inputStream().use { input ->
+                target.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), null, null)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to copy file and scan: ${source.name} to ${target.name}", e)
+            throw e
+        }
     }
 
     private fun moveObbFiles(obbs: Array<File>, packageName: String) {
