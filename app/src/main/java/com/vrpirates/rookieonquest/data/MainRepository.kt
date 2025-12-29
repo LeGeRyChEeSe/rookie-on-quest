@@ -321,6 +321,60 @@ class MainRepository(private val context: Context) {
         downloadOnly: Boolean = false,
         onProgress: (String, Float, Long, Long) -> Unit
     ): File? = withContext(Dispatchers.IO) {
+        // 1. Check if already installed and up to date
+        val installedMap = getInstalledPackagesMap()
+        val installedVersion = installedMap[game.packageName]
+        val targetVersion = game.versionCode.toLongOrNull() ?: 0L
+        
+        if (!downloadOnly && installedVersion != null && installedVersion >= targetVersion) {
+            onProgress("Already installed (v$installedVersion)", 1f, 0, 0)
+            delay(1500)
+            return@withContext null
+        }
+
+        // 2. Check for existing APK in downloads or external storage
+        val safeDirName = game.releaseName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+        val gameDownloadDir = File(downloadsDir, safeDirName)
+        val safeGameName = game.gameName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+        val cachedApk = File(gameDownloadDir, "${safeGameName}_v${game.versionCode}.apk")
+
+        if (downloadOnly && isApkMatching(cachedApk, game.packageName, targetVersion)) {
+            onProgress("Already downloaded", 1f, 0, 0)
+            delay(1000)
+            return@withContext null
+        }
+
+        var readyApk: File? = null
+        
+        // Check if it's already in the external installer dir (cancelled previous install)
+        val externalApkDir = context.getExternalFilesDir(null)
+        readyApk = externalApkDir?.listFiles()?.find { isApkMatching(it, game.packageName, targetVersion) }
+        
+        // If not found, check in downloads directory
+        if (readyApk == null && isApkMatching(cachedApk, game.packageName, targetVersion)) {
+            onProgress("Found in downloads...", 0.85f, 0, 0)
+            val externalApk = File(context.getExternalFilesDir(null), cachedApk.name)
+            try {
+                cachedApk.copyTo(externalApk, overwrite = true)
+                readyApk = externalApk
+                
+                // Also try to move OBBs if they exist in the download dir
+                val obbs = gameDownloadDir.listFiles { _, name -> name.endsWith(".obb", true) }
+                if (!obbs.isNullOrEmpty()) {
+                    onProgress("Installing OBBs from downloads...", 0.95f, 0, 0)
+                    moveObbFiles(obbs, game.packageName)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to copy APK from downloads: ${e.message}")
+            }
+        }
+
+        if (!downloadOnly && readyApk != null) {
+            onProgress("Launching installer...", 1f, 0, 0)
+            delay(500)
+            return@withContext readyApk
+        }
+
         val config = cachedConfig ?: throw Exception("Config not loaded")
         val password = decodedPassword ?: throw Exception("Password not available")
         val hash = md5(game.releaseName + "\n")
@@ -551,6 +605,18 @@ class MainRepository(private val context: Context) {
             val request = Request.Builder().url(url).head().header("User-Agent", "rclone/v1.72.1").build()
             okHttpClient.newCall(request).execute().use { it.header("Last-Modified") }
         } catch (e: Exception) { null }
+    }
+
+    private fun isApkMatching(file: File, packageName: String, versionCode: Long): Boolean {
+        if (!file.exists()) return false
+        return try {
+            val pm = context.packageManager
+            val info = pm.getPackageArchiveInfo(file.absolutePath, 0) ?: return false
+            val fileVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
+            info.packageName == packageName && fileVersion == versionCode
+        } catch (e: Exception) {
+            false
+        }
     }
 
     private fun md5(input: String): String {
