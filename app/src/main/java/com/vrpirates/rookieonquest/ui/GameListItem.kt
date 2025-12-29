@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import coil.request.ImageResult
 import coil.size.Precision
 import java.io.File
 
@@ -46,6 +47,7 @@ fun GameListItem(
     onInstallClick: () -> Unit,
     onUninstallClick: () -> Unit,
     onDownloadOnlyClick: () -> Unit,
+    onDeleteDownloadClick: () -> Unit = {},
     onResumeClick: () -> Unit = {},
     isGridItem: Boolean = false
 ) {
@@ -191,14 +193,27 @@ fun GameListItem(
                 
                 if (!isGridItem) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        val actionIcon = if (game.installStatus == InstallStatus.INSTALLED || game.installStatus == InstallStatus.UPDATE_AVAILABLE) Icons.Default.Delete else Icons.Default.Download
-                        val actionTint = if (game.installStatus == InstallStatus.INSTALLED || game.installStatus == InstallStatus.UPDATE_AVAILABLE) Color(0xFFCF6679) else Color.Gray
-                        
-                        IconButton(
-                            onClick = { if (game.installStatus == InstallStatus.NOT_INSTALLED) onDownloadOnlyClick() else onUninstallClick() },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(actionIcon, contentDescription = null, tint = actionTint, modifier = Modifier.size(18.dp))
+                        if (game.isDownloaded && game.installStatus == InstallStatus.NOT_INSTALLED) {
+                             IconButton(
+                                onClick = { onDeleteDownloadClick() },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete Download", tint = Color(0xFFCF6679).copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
+                            }
+                        } else if (game.installStatus == InstallStatus.INSTALLED || game.installStatus == InstallStatus.UPDATE_AVAILABLE) {
+                            IconButton(
+                                onClick = { onUninstallClick() },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Uninstall", tint = Color(0xFFCF6679), modifier = Modifier.size(18.dp))
+                            }
+                        } else {
+                            IconButton(
+                                onClick = { onDownloadOnlyClick() },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = "Download Only", tint = Color.Gray, modifier = Modifier.size(18.dp))
+                            }
                         }
                         
                         Spacer(modifier = Modifier.width(4.dp))
@@ -272,9 +287,20 @@ fun GameListItem(
                     if (isGridItem) {
                         Spacer(modifier = Modifier.height(12.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(onClick = { if (game.installStatus == InstallStatus.NOT_INSTALLED) onDownloadOnlyClick() else onUninstallClick() }) {
-                                Text(if (game.installStatus == InstallStatus.NOT_INSTALLED) "Download" else "Uninstall", color = if (game.installStatus == InstallStatus.NOT_INSTALLED) Color.Gray else Color(0xFFCF6679), fontSize = 12.sp)
+                            if (game.isDownloaded && game.installStatus == InstallStatus.NOT_INSTALLED) {
+                                TextButton(onClick = onDeleteDownloadClick) {
+                                    Text("Delete Download", color = Color(0xFFCF6679).copy(alpha = 0.7f), fontSize = 12.sp)
+                                }
+                            } else if (game.installStatus != InstallStatus.NOT_INSTALLED) {
+                                TextButton(onClick = onUninstallClick) {
+                                    Text("Uninstall", color = Color(0xFFCF6679), fontSize = 12.sp)
+                                }
+                            } else {
+                                TextButton(onClick = onDownloadOnlyClick) {
+                                    Text("Download", color = Color.Gray, fontSize = 12.sp)
+                                }
                             }
+
                             Spacer(modifier = Modifier.width(8.dp))
                             Button(
                                 onClick = { if (canResume) onResumeClick() else onInstallClick() }, 

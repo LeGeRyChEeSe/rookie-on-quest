@@ -965,6 +965,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun deleteDownloadedGame(releaseName: String) {
+        viewModelScope.launch {
+            try {
+                repository.deleteDownloadedGame(releaseName)
+                refreshDownloadedReleases()
+                _events.emit(MainEvent.ShowMessage("Download deleted"))
+            } catch (e: Exception) {
+                _events.emit(MainEvent.ShowMessage("Failed to delete download: ${e.message}"))
+            }
+        }
+    }
+
     private fun formatSize(bytes: Long): String {
         if (bytes <= 0) return "0 B"
         val units = arrayOf("B", "KB", "MB", "GB", "TB")

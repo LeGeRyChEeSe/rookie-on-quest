@@ -104,6 +104,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     
     var showUpdateDialogState by remember { mutableStateOf<com.vrpirates.rookieonquest.network.GitHubRelease?>(null) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var gameToDelete by remember { mutableStateOf<GameItemState?>(null) }
 
     LaunchedEffect(listState, staggeredGridState) {
         snapshotFlow { 
@@ -296,6 +297,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                             onInstallClick = { viewModel.installGame(game.releaseName) },
                                             onUninstallClick = { viewModel.uninstallGame(game.packageName) },
                                             onDownloadOnlyClick = { viewModel.installGame(game.releaseName, downloadOnly = true) },
+                                            onDeleteDownloadClick = { gameToDelete = game },
                                             onResumeClick = { viewModel.resumeInstall(game.releaseName) },
                                             isGridItem = true
                                         )
@@ -313,6 +315,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                             onInstallClick = { viewModel.installGame(game.releaseName) },
                                             onUninstallClick = { viewModel.uninstallGame(game.packageName) },
                                             onDownloadOnlyClick = { viewModel.installGame(game.releaseName, downloadOnly = true) },
+                                            onDeleteDownloadClick = { gameToDelete = game },
                                             onResumeClick = { viewModel.resumeInstall(game.releaseName) }
                                         )
                                     }
@@ -352,6 +355,32 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 keepApks = keepApks,
                 onToggleKeepApks = { viewModel.toggleKeepApks() },
                 onDismiss = { showSettingsDialog = false }
+            )
+        }
+
+        if (gameToDelete != null) {
+            AlertDialog(
+                onDismissRequest = { gameToDelete = null },
+                title = { Text("Delete Download?") },
+                text = { Text("Are you sure you want to delete the downloaded files for ${gameToDelete?.name}?") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            gameToDelete?.let { viewModel.deleteDownloadedGame(it.releaseName) }
+                            gameToDelete = null
+                        },
+                        colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFCF6679))
+                    ) {
+                        Text("DELETE", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { gameToDelete = null }) {
+                        Text("CANCEL")
+                    }
+                },
+                containerColor = Color(0xFF1E1E1E),
+                shape = RoundedCornerShape(24.dp)
             )
         }
     }

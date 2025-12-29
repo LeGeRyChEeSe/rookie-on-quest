@@ -643,6 +643,16 @@ class MainRepository(private val context: Context) {
         }
     }
 
+    suspend fun deleteDownloadedGame(releaseName: String) = withContext(Dispatchers.IO) {
+        val safeDirName = releaseName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+        val gameDownloadDir = File(downloadsDir, safeDirName)
+        if (gameDownloadDir.exists()) {
+            gameDownloadDir.deleteRecursively()
+            // Scan to update Android media store/MTP view
+            MediaScannerConnection.scanFile(context, arrayOf(downloadsDir.absolutePath), null, null)
+        }
+    }
+
     private suspend fun copyFileWithScanner(source: File, target: File) = withContext(Dispatchers.IO) {
         try {
             source.inputStream().use { input ->
