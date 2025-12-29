@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.SpanStyle
@@ -88,7 +89,6 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val keepApks by viewModel.keepApks.collectAsState()
     
     val isUpdateCheckInProgress by viewModel.isUpdateCheckInProgress.collectAsState()
-    val isUpdateDialogShowing by viewModel.isUpdateDialogShowing.collectAsState()
     val isUpdateDownloading by viewModel.isUpdateDownloading.collectAsState()
     val updateProgress by viewModel.updateProgress.collectAsState()
     
@@ -190,66 +190,55 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         }
     }
 
-    val release = showUpdateDialogState
-    if (release != null) {
-        UpdateDialog(
-            release = release,
-            onDismiss = { 
-                showUpdateDialogState = null 
-                viewModel.onUpdateDialogDismissed()
-            },
-            onConfirm = {
-                viewModel.downloadAndInstallUpdate(release)
-                showUpdateDialogState = null
-            }
-        )
-    }
-
-    if (showSettingsDialog) {
-        SettingsDialog(
-            keepApks = keepApks,
-            onToggleKeepApks = { viewModel.toggleKeepApks() },
-            onDismiss = { showSettingsDialog = false }
-        )
-    }
-
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isWide = maxWidth > 800.dp
         
-        Scaffold(
-            snackbarHost = { SnackbarHost(snackbarHostState) },
-            topBar = {
-                CustomTopBar(
-                    searchQuery = searchQuery,
-                    onSearchQueryChange = { viewModel.setSearchQuery(it) },
-                    selectedFilter = selectedFilter,
-                    onFilterChange = { viewModel.setFilter(it) },
-                    filterCounts = filterCounts,
-                    onSettingsClick = { showSettingsDialog = true },
-                    onRefreshClick = { viewModel.refreshData() },
-                    isRefreshing = isRefreshing,
-                    isInstalling = installState.isInstalling || isUpdateDownloading,
-                    permissionsMissing = missingPermissions?.isNotEmpty() == true
-                )
-            },
-            containerColor = Color.Black
-        ) { innerPadding ->
-            Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
-                when {
-                    isUpdateCheckInProgress -> LoadingScreen("Checking for updates...")
-                    isUpdateDialogShowing -> LoadingScreen("Update available!")
-                    isUpdateDownloading -> InstallationOverlay(
-                        installState = InstallState(isInstalling = true, message = updateProgress, progress = -1f),
-                        onCancel = {}
-                    )
-                    missingPermissions == null -> LoadingScreen("Checking permissions...")
-                    missingPermissions!!.isNotEmpty() -> {
-                        PermissionOverlay(
-                            missingPermissions = missingPermissions!!,
-                            onGrantClick = { viewModel.startPermissionFlow() }
-                        )
+        when {
+            isUpdateCheckInProgress -> LoadingScreen("Checking for updates...")
+            isUpdateDownloading -> InstallationOverlay(
+                installState = InstallState(isInstalling = true, message = updateProgress, progress = -1f, gameName = "Rookie Update"),
+                onCancel = {}
+            )
+            showUpdateDialogState != null -> {
+                UpdateOverlay(
+                    release = showUpdateDialogState!!,
+                    onDismiss = { 
+                        showUpdateDialogState = null 
+                        viewModel.onUpdateDialogDismissed()
+                    },
+                    onConfirm = {
+                        viewModel.downloadAndInstallUpdate(showUpdateDialogState!!)
+                        showUpdateDialogState = null
                     }
-                    else -> {
+                )
+            }
+            missingPermissions == null -> LoadingScreen("Checking permissions...")
+            missingPermissions!!.isNotEmpty() -> {
+                PermissionOverlay(
+                    missingPermissions = missingPermissions!!,
+                    onGrantClick = { viewModel.startPermissionFlow() }
+                )
+            }
+            else -> {
+                Scaffold(
+                    snackbarHost = { SnackbarHost(snackbarHostState) },
+                    topBar = {
+                        CustomTopBar(
+                            searchQuery = searchQuery,
+                            onSearchQueryChange = { viewModel.setSearchQuery(it) },
+                            selectedFilter = selectedFilter,
+                            onFilterChange = { viewModel.setFilter(it) },
+                            filterCounts = filterCounts,
+                            onSettingsClick = { showSettingsDialog = true },
+                            onRefreshClick = { viewModel.refreshData() },
+                            isRefreshing = isRefreshing,
+                            isInstalling = installState.isInstalling || isUpdateDownloading,
+                            permissionsMissing = false // Handled by outer when
+                        )
+                    },
+                    containerColor = Color.Black
+                ) { innerPadding ->
+                    Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
                         Row(modifier = Modifier.fillMaxSize()) {
                             if (games.isNotEmpty() && searchQuery.isEmpty() && selectedFilter == FilterStatus.ALL) {
                                 AlphabetIndexer(
@@ -326,6 +315,109 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 }
             }
         }
+
+        if (showSettingsDialog) {
+            SettingsDialog(
+                keepApks = keepApks,
+                onToggleKeepApks = { viewModel.toggleKeepApks() },
+                onDismiss = { showSettingsDialog = false }
+            )
+        }
+    }
+}
+
+@Composable
+fun SetupLayout(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    iconColor: Color = MaterialTheme.colorScheme.secondary,
+    primaryButtonText: String,
+    onPrimaryClick: () -> Unit,
+    secondaryButtonText: String? = null,
+    onSecondaryClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .clickable(enabled = false) { } // Block all clicks to underlying app
+    ) {
+        // Decorative Top Gradient
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(400.dp)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(iconColor.copy(alpha = 0.15f), Color.Transparent)
+                    )
+                )
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = iconColor,
+                modifier = Modifier.size(80.dp)
+            )
+            
+            Spacer(modifier = Modifier.height(32.dp))
+            
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Black,
+                color = Color.White,
+                textAlign = TextAlign.Center
+            )
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color.LightGray,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(0.9f)
+            )
+            
+            Spacer(modifier = Modifier.height(48.dp))
+            
+            content()
+            
+            Spacer(modifier = Modifier.height(48.dp))
+            
+            Button(
+                onClick = onPrimaryClick,
+                modifier = Modifier
+                    .fillMaxWidth(0.8f)
+                    .height(64.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = iconColor)
+            ) {
+                Text(primaryButtonText, fontWeight = FontWeight.Black, fontSize = 18.sp, color = if (iconColor == Color.White) Color.Black else Color.White)
+            }
+            
+            if (secondaryButtonText != null && onSecondaryClick != null) {
+                Spacer(modifier = Modifier.height(16.dp))
+                TextButton(
+                    onClick = onSecondaryClick,
+                    modifier = Modifier.fillMaxWidth(0.8f)
+                ) {
+                    Text(secondaryButtonText, color = Color.Gray, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
     }
 }
 
@@ -334,77 +426,98 @@ fun PermissionOverlay(
     missingPermissions: List<RequiredPermission>,
     onGrantClick: () -> Unit
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(Color.Black, Color(0xFF1A1A1A))
-                )
-            ),
-        contentAlignment = Alignment.Center
+    SetupLayout(
+        title = "Action Required",
+        subtitle = "Rookie On Quest needs some permissions to sideload games directly to your headset library.",
+        icon = Icons.Default.Security,
+        iconColor = MaterialTheme.colorScheme.secondary,
+        primaryButtonText = "GRANT PERMISSIONS",
+        onPrimaryClick = onGrantClick
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth(0.8f)
-                .padding(32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Icon(
-                imageVector = Icons.Default.Security,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.size(100.dp)
-            )
-            Spacer(modifier = Modifier.height(32.dp))
-            Text(
-                text = "Action Required",
-                style = MaterialTheme.typography.headlineLarge,
-                color = Color.White,
-                fontWeight = FontWeight.Black
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "Rookie On Quest needs some permissions to sideload games directly to your headset.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = Color.LightGray,
-                textAlign = TextAlign.Center
-            )
-            Spacer(modifier = Modifier.height(48.dp))
-            
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                missingPermissions.forEach { permission ->
-                    val (title, icon) = when (permission) {
-                        RequiredPermission.INSTALL_UNKNOWN_APPS -> "Install Unknown Apps" to Icons.Default.SystemUpdate
-                        RequiredPermission.MANAGE_EXTERNAL_STORAGE -> "Manage External Storage" to Icons.Default.Storage
-                    }
-                    
-                    Surface(
-                        color = Color.White.copy(alpha = 0.05f),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            missingPermissions.forEach { permission ->
+                val (title, description, icon) = when (permission) {
+                    RequiredPermission.INSTALL_UNKNOWN_APPS -> Triple(
+                        "Install Unknown Apps",
+                        "Allows Rookie to install the games you download.",
+                        Icons.Default.SystemUpdate
+                    )
+                    RequiredPermission.MANAGE_EXTERNAL_STORAGE -> Triple(
+                        "File Access",
+                        "Required to copy OBB and game files to storage.",
+                        Icons.Default.Storage
+                    )
+                }
+                
+                Surface(
+                    color = Color.White.copy(alpha = 0.05f),
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(20.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .background(Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp)),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Icon(icon, contentDescription = null, tint = Color.Gray)
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Text(title, color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Icon(icon, contentDescription = null, tint = Color.White)
+                        }
+                        Spacer(modifier = Modifier.width(20.dp))
+                        Column {
+                            Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text(description, color = Color.Gray, fontSize = 13.sp)
                         }
                     }
                 }
             }
-            
-            Spacer(modifier = Modifier.height(48.dp))
-            
-            Button(
-                onClick = onGrantClick,
-                modifier = Modifier.height(64.dp).fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text("GRANT PERMISSIONS", fontWeight = FontWeight.Black, fontSize = 18.sp)
+        }
+    }
+}
+
+@Composable
+fun UpdateOverlay(
+    release: com.vrpirates.rookieonquest.network.GitHubRelease,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    SetupLayout(
+        title = "Update Available",
+        subtitle = "A new version of Rookie is available. Keeping the app up to date ensures compatibility with the latest games.",
+        icon = Icons.Default.NewReleases,
+        iconColor = Color(0xFF3498db),
+        primaryButtonText = "UPDATE NOW",
+        onPrimaryClick = onConfirm,
+        secondaryButtonText = "LATER",
+        onSecondaryClick = onDismiss
+    ) {
+        Surface(
+            color = Color.White.copy(alpha = 0.05f),
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFF3498db), modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = "Version ${release.tagName}",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Box(modifier = Modifier.heightIn(max = 250.dp)) {
+                    Text(
+                        text = parseMarkdown(release.body),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.LightGray
+                    )
+                }
             }
         }
     }
@@ -585,7 +698,7 @@ fun SyncingOverlay() {
 
 @Composable
 fun LoadingScreen(message: String) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             CircularProgressIndicator(
                 modifier = Modifier.size(48.dp),
@@ -626,7 +739,7 @@ fun ErrorScreen(message: String, onRetry: () -> Unit) {
 fun InstallationOverlay(installState: InstallState, onCancel: () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxSize(),
-        color = Color.Black.copy(alpha = 0.9f)
+        color = Color.Black.copy(alpha = 0.95f)
     ) {
         Column(
             modifier = Modifier.fillMaxSize().padding(40.dp),
@@ -701,47 +814,6 @@ fun InstallationOverlay(installState: InstallState, onCancel: () -> Unit) {
             }
         }
     }
-}
-
-@Composable
-fun UpdateDialog(
-    release: com.vrpirates.rookieonquest.network.GitHubRelease,
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.SystemUpdate, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
-                Spacer(modifier = Modifier.width(12.dp))
-                Text("New Update Available")
-            }
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
-                Text(
-                    "Version ${release.tagName} is now available.",
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(parseMarkdown(release.body), style = MaterialTheme.typography.bodyMedium, color = Color.LightGray)
-            }
-        },
-        confirmButton = {
-            Button(onClick = onConfirm, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) {
-                Text("UPDATE NOW")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("LATER", color = Color.Gray)
-            }
-        },
-        containerColor = Color(0xFF1E1E1E),
-        shape = RoundedCornerShape(24.dp)
-    )
 }
 
 @Composable
