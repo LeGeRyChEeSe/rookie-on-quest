@@ -17,16 +17,24 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class MainRepository(private val context: Context) {
     private val TAG = "MainRepository"
@@ -197,13 +205,40 @@ class MainRepository(private val context: Context) {
         }
     }
 
-    private fun downloadFile(url: String, targetFile: File) {
+    private suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
+        continuation.invokeOnCancellation {
+            cancel()
+        }
+        enqueue(object : Callback {
+            override fun onResponse(call: Call, response: Response) {
+                continuation.resume(response)
+            }
+            override fun onFailure(call: Call, e: IOException) {
+                continuation.resumeWithException(e)
+            }
+        })
+    }
+
+    private suspend fun downloadFile(url: String, targetFile: File) {
         val request = Request.Builder().url(url).header("User-Agent", "rclone/v1.72.1").build()
-        okHttpClient.newCall(request).execute().use { response ->
+        okHttpClient.newCall(request).await().use { response ->
             if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
             response.body?.byteStream()?.use { input ->
-                targetFile.outputStream().use { output -> input.copyTo(output) }
+                targetFile.outputStream().use { output -> 
+                    copyToCancellable(input, output)
+                }
             }
+        }
+    }
+
+    private suspend fun copyToCancellable(input: InputStream, output: OutputStream) {
+        val buffer = ByteArray(8192 * 8)
+        var bytesRead: Int
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            bytesRead = input.read(buffer)
+            if (bytesRead == -1) break
+            output.write(buffer, 0, bytesRead)
         }
     }
 
@@ -237,7 +272,7 @@ class MainRepository(private val context: Context) {
 
         try {
             val request = Request.Builder().url(dirUrl).header("User-Agent", "rclone/v1.72.1").build()
-            okHttpClient.newCall(request).execute().use { response ->
+            okHttpClient.newCall(request).await().use { response ->
                 if (response.code == 404) {
                     gameDao.updateSize(game.releaseName, -1L)
                     throw Exception("Mirror error: 404")
@@ -267,7 +302,7 @@ class MainRepository(private val context: Context) {
                     val notesUrl = dirUrl + "notes.txt"
                     try {
                         val notesRequest = Request.Builder().url(notesUrl).header("User-Agent", "rclone/v1.72.1").build()
-                        okHttpClient.newCall(notesRequest).execute().use { notesResponse ->
+                        okHttpClient.newCall(notesRequest).await().use { notesResponse ->
                             if (notesResponse.isSuccessful) {
                                 description = notesResponse.body?.string()?.trim()
                             }
@@ -286,7 +321,7 @@ class MainRepository(private val context: Context) {
                         .head()
                         .header("User-Agent", "rclone/v1.72.1")
                         .build()
-                    okHttpClient.newCall(headRequest).execute().use { response ->
+                    okHttpClient.newCall(headRequest).await().use { response ->
                         response.header("Content-Length")?.toLongOrNull() ?: 0L
                     }
                 }
@@ -355,7 +390,7 @@ class MainRepository(private val context: Context) {
             onProgress("Found in downloads...", 0.85f, 0, 0)
             val externalApk = File(context.getExternalFilesDir(null), cachedApk.name)
             try {
-                cachedApk.copyTo(externalApk, overwrite = true)
+                copyFileWithScanner(cachedApk, externalApk)
                 readyApk = externalApk
                 
                 // Also try to move OBBs if they exist in the download dir
@@ -388,7 +423,7 @@ class MainRepository(private val context: Context) {
 
         // Pre-flight space check
         val isSevenZ = segments.any { it.contains(".7z") }
-        val multiplier = if (isSevenZ) 1.9 else 1.1
+        val multiplier = if (isSevenZ) if (downloadOnly || keepApk) 2.9 else 1.9 else 1.1
         checkAvailableSpace((totalBytes * multiplier).toLong())
 
         val gameTempDir = File(tempInstallRoot, hash)
@@ -403,7 +438,7 @@ class MainRepository(private val context: Context) {
         }
 
         for ((index, seg) in segments.withIndex()) {
-            ensureActive()
+            currentCoroutineContext().ensureActive()
             val localFile = File(gameTempDir, seg)
             localPaths.add(localFile)
             val segUrl = dirUrl + seg
@@ -417,7 +452,7 @@ class MainRepository(private val context: Context) {
                 .build()
 
             try {
-                okHttpClient.newCall(segRequest).execute().use { response ->
+                okHttpClient.newCall(segRequest).await().use { response ->
                     if (response.code == 416) {
                         // Already done or range not satisfiable
                     } else {
@@ -429,8 +464,10 @@ class MainRepository(private val context: Context) {
                             FileOutputStream(localFile, isResume).use { output ->
                                 val buffer = ByteArray(8192 * 8)
                                 var bytesRead: Int
-                                while (input.read(buffer).also { bytesRead = it } != -1) {
-                                    ensureActive()
+                                while (true) {
+                                    currentCoroutineContext().ensureActive()
+                                    bytesRead = input.read(buffer)
+                                    if (bytesRead == -1) break
                                     output.write(buffer, 0, bytesRead)
                                     totalBytesDownloaded += bytesRead
                                     
@@ -453,7 +490,7 @@ class MainRepository(private val context: Context) {
             }
         }
 
-        ensureActive()
+        currentCoroutineContext().ensureActive()
         val extractionDir = File(gameTempDir, "extracted").apply { if (!exists()) mkdirs() }
         val extractionMarker = File(gameTempDir, "extraction_done.marker")
 
@@ -469,19 +506,21 @@ class MainRepository(private val context: Context) {
                     onProgress("Merging files...", 0.85f, totalBytes, totalBytes)
                     combinedFile.outputStream().use { out ->
                         localPaths.forEach { part -> 
-                            ensureActive()
-                            part.inputStream().use { it.copyTo(out) } 
+                            currentCoroutineContext().ensureActive()
+                            part.inputStream().use { input ->
+                                copyToCancellable(input, out)
+                            }
                         }
                     }
                 }
                 
                 onProgress("Extracting...", 0.88f, totalBytes, totalBytes)
-                ensureActive()
+                currentCoroutineContext().ensureActive()
                 try {
                     SevenZFile.builder().setFile(combinedFile).setPassword(password.toCharArray()).get().use { sevenZFile ->
                         var entry = sevenZFile.nextEntry
                         while (entry != null) {
-                            ensureActive()
+                            currentCoroutineContext().ensureActive()
                             if (entry.name.endsWith(".apk", true) || entry.name.endsWith(".obb", true)) {
                                 val fileName = File(entry.name).name
                                 val outFile = File(extractionDir, fileName)
@@ -489,7 +528,10 @@ class MainRepository(private val context: Context) {
                                 FileOutputStream(outFile).use { out ->
                                     val buffer = ByteArray(8192 * 8)
                                     var bytesRead: Int
-                                    while (sevenZFile.read(buffer).also { bytesRead = it } != -1) {
+                                    while (true) {
+                                        currentCoroutineContext().ensureActive()
+                                        bytesRead = sevenZFile.read(buffer)
+                                        if (bytesRead == -1) break
                                         out.write(buffer, 0, bytesRead)
                                     }
                                 }
@@ -601,11 +643,11 @@ class MainRepository(private val context: Context) {
         }
     }
 
-    private fun copyFileWithScanner(source: File, target: File) {
+    private suspend fun copyFileWithScanner(source: File, target: File) = withContext(Dispatchers.IO) {
         try {
             source.inputStream().use { input ->
                 target.outputStream().use { output ->
-                    input.copyTo(output)
+                    copyToCancellable(input, output)
                 }
             }
             MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), null, null)
@@ -636,10 +678,10 @@ class MainRepository(private val context: Context) {
         }
     }
 
-    private fun getRemoteLastModified(url: String): String? {
+    private suspend fun getRemoteLastModified(url: String): String? {
         return try {
             val request = Request.Builder().url(url).head().header("User-Agent", "rclone/v1.72.1").build()
-            okHttpClient.newCall(request).execute().use { it.header("Last-Modified") }
+            okHttpClient.newCall(request).await().use { it.header("Last-Modified") }
         } catch (e: Exception) { null }
     }
 

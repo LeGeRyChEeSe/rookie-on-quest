@@ -40,33 +40,13 @@ import coil.request.ImageRequest
 import coil.size.Precision
 import java.io.File
 
-enum class InstallStatus {
-    NOT_INSTALLED,
-    INSTALLED,
-    UPDATE_AVAILABLE
-}
-
-@Immutable
-data class GameItemState(
-    val name: String,
-    val version: String,
-    val installedVersion: String? = null,
-    val packageName: String,
-    val releaseName: String,
-    val iconFile: File?,
-    val installStatus: InstallStatus = InstallStatus.NOT_INSTALLED,
-    val isDownloaded: Boolean = false,
-    val size: String? = null,
-    val description: String? = null,
-    val screenshotUrls: List<String>? = null
-)
-
 @Composable
 fun GameListItem(
     game: GameItemState,
     onInstallClick: () -> Unit,
     onUninstallClick: () -> Unit,
     onDownloadOnlyClick: () -> Unit,
+    onResumeClick: () -> Unit = {},
     isGridItem: Boolean = false
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -80,19 +60,27 @@ fun GameListItem(
         label = "scale"
     )
     
-    val buttonColor = when (game.installStatus) {
-        InstallStatus.NOT_INSTALLED -> MaterialTheme.colorScheme.secondary
-        InstallStatus.INSTALLED -> Color(0xFF3498db)
-        InstallStatus.UPDATE_AVAILABLE -> Color(0xFF2ecc71)
+    val isPaused = game.queueStatus == InstallTaskStatus.PAUSED
+    val isProcessing = game.queueStatus?.isProcessing() == true || game.queueStatus == InstallTaskStatus.QUEUED
+    val canResume = isPaused && game.isFirstInQueue
+
+    val buttonColor = when {
+        canResume -> Color(0xFF2ecc71)
+        game.installStatus == InstallStatus.INSTALLED -> Color(0xFF3498db)
+        game.installStatus == InstallStatus.UPDATE_AVAILABLE -> Color(0xFF2ecc71)
+        else -> MaterialTheme.colorScheme.secondary
     }
     
-    val buttonText = when (game.installStatus) {
-        InstallStatus.UPDATE_AVAILABLE -> "UPDATE"
-        InstallStatus.INSTALLED -> "INSTALLED"
+    val buttonText = when {
+        canResume -> "RESUME"
+        isProcessing -> "IN QUEUE"
+        isPaused -> "PAUSED"
+        game.installStatus == InstallStatus.UPDATE_AVAILABLE -> "UPDATE"
+        game.installStatus == InstallStatus.INSTALLED -> "INSTALLED"
         else -> "INSTALL"
     }
     
-    val isEnabled = game.installStatus != InstallStatus.INSTALLED
+    val isEnabled = (game.installStatus != InstallStatus.INSTALLED || canResume) && !isProcessing && (game.queueStatus == null || canResume)
 
     Card(
         modifier = Modifier
@@ -132,7 +120,7 @@ fun GameListItem(
                         model = ImageRequest.Builder(context)
                             .data(game.iconFile)
                             .crossfade(true)
-                            .size(120, 120) // Redimensionnement pour libérer de la RAM
+                            .size(120, 120) 
                             .precision(Precision.EXACT)
                             .diskCachePolicy(CachePolicy.ENABLED)
                             .memoryCachePolicy(CachePolicy.ENABLED)
@@ -187,6 +175,17 @@ fun GameListItem(
                                 modifier = Modifier.size(12.dp)
                             )
                         }
+                        
+                        if (isPaused) {
+                            Text(
+                                text = " • PAUSED",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFf1c40f),
+                                modifier = Modifier.padding(start = 4.dp),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
                 
@@ -205,7 +204,7 @@ fun GameListItem(
                         Spacer(modifier = Modifier.width(4.dp))
 
                         Button(
-                            onClick = onInstallClick,
+                            onClick = { if (canResume) onResumeClick() else onInstallClick() },
                             enabled = isEnabled,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = buttonColor,
@@ -240,7 +239,7 @@ fun GameListItem(
                                     AsyncImage(
                                         model = ImageRequest.Builder(context)
                                             .data(url)
-                                            .size(480, 270) // Taille réduite pour les screenshots
+                                            .size(480, 270) 
                                             .crossfade(true)
                                             .build(),
                                         contentDescription = null,
@@ -278,7 +277,7 @@ fun GameListItem(
                             }
                             Spacer(modifier = Modifier.width(8.dp))
                             Button(
-                                onClick = onInstallClick, 
+                                onClick = { if (canResume) onResumeClick() else onInstallClick() }, 
                                 enabled = isEnabled, 
                                 colors = ButtonDefaults.buttonColors(containerColor = buttonColor),
                                 shape = RoundedCornerShape(8.dp),

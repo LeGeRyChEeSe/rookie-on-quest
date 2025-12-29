@@ -296,6 +296,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                             onInstallClick = { viewModel.installGame(game.releaseName) },
                                             onUninstallClick = { viewModel.uninstallGame(game.packageName) },
                                             onDownloadOnlyClick = { viewModel.installGame(game.releaseName, downloadOnly = true) },
+                                            onResumeClick = { viewModel.resumeInstall(game.releaseName) },
                                             isGridItem = true
                                         )
                                     }
@@ -311,7 +312,8 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                             game = game,
                                             onInstallClick = { viewModel.installGame(game.releaseName) },
                                             onUninstallClick = { viewModel.uninstallGame(game.packageName) },
-                                            onDownloadOnlyClick = { viewModel.installGame(game.releaseName, downloadOnly = true) }
+                                            onDownloadOnlyClick = { viewModel.installGame(game.releaseName, downloadOnly = true) },
+                                            onResumeClick = { viewModel.resumeInstall(game.releaseName) }
                                         )
                                     }
                                 }
@@ -327,16 +329,22 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         }
 
         if (showInstallOverlay) {
-            QueueManagerOverlay(
-                queue = installQueue,
-                viewedReleaseName = viewedReleaseName,
-                onTaskClick = { viewModel.setFocusedTask(it) },
-                onCancel = { viewModel.cancelInstall(it) },
-                onPause = { viewModel.pauseInstall(it) },
-                onResume = { viewModel.resumeInstall(it) },
-                onPromote = { viewModel.promoteTask(it) },
-                onClose = { viewModel.hideInstallOverlay() }
-            )
+            val taskToShow = installQueue.find { it.releaseName == viewedReleaseName }
+                ?: installQueue.find { it.status.isProcessing() }
+                ?: installQueue.firstOrNull()
+            
+            if (taskToShow != null) {
+                QueueManagerOverlay(
+                    queue = installQueue,
+                    viewedReleaseName = taskToShow.releaseName,
+                    onTaskClick = { viewModel.setFocusedTask(it) },
+                    onCancel = { viewModel.cancelInstall(it) },
+                    onPause = { viewModel.pauseInstall(it) },
+                    onResume = { viewModel.resumeInstall(it) },
+                    onPromote = { viewModel.promoteTask(it) },
+                    onClose = { viewModel.hideInstallOverlay() }
+                )
+            }
         }
 
         if (showSettingsDialog) {
@@ -848,28 +856,28 @@ fun InstallationOverlay(
                     Button(
                         onClick = onResume,
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.height(56.dp).weight(1f),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ecc71))
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ecc71)),
+                        modifier = Modifier.height(56.dp).weight(1f)
                     ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = Color.White)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("RESUME", fontWeight = FontWeight.Bold)
+                        Text("RESUME", color = Color.White, fontWeight = FontWeight.Bold)
                     }
-                } else {
+                } else if (activeTask.status.isProcessing()) {
                     OutlinedButton(
                         onClick = onPause,
                         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.height(56.dp).weight(1f)
                     ) {
-                        Icon(Icons.Default.Pause, contentDescription = null, tint = Color.White)
+                        Icon(Icons.Default.Pause, contentDescription = "Pause", tint = Color.White)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("PAUSE", color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 }
 
                 OutlinedButton(
-                    onClick = onCancel,
+                    onClick = { onCancel() },
                     border = BorderStroke(1.dp, Color(0xFFCF6679).copy(alpha = 0.5f)),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.height(56.dp).weight(1f)
@@ -1063,6 +1071,7 @@ fun QueueManagerOverlay(
                 items(queue, key = { it.releaseName }) { task ->
                     val isViewed = task.releaseName == viewedReleaseName
                     val isProcessing = task.status.isProcessing()
+                    val isPaused = task.status == InstallTaskStatus.PAUSED
                     
                     Surface(
                         modifier = Modifier
@@ -1090,18 +1099,18 @@ fun QueueManagerOverlay(
                                     )
                                 }
                                 
-                                if (task.status == InstallTaskStatus.QUEUED || task.status == InstallTaskStatus.PAUSED) {
-                                    IconButton(onClick = { onPromote(task.releaseName) }) {
-                                        Icon(Icons.Default.VerticalAlignTop, contentDescription = "Prioritize", tint = MaterialTheme.colorScheme.secondary)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (!isProcessing && (task.status == InstallTaskStatus.QUEUED || isPaused || task.status == InstallTaskStatus.FAILED)) {
+                                        IconButton(onClick = { onPromote(task.releaseName) }) {
+                                            Icon(Icons.Default.VerticalAlignTop, contentDescription = "Prioritize", tint = MaterialTheme.colorScheme.secondary)
+                                        }
                                     }
-                                }
-                                
-                                Row {
+                                    
                                     if (isProcessing) {
                                         IconButton(onClick = { onPause(task.releaseName) }) {
                                             Icon(Icons.Default.Pause, contentDescription = "Pause", tint = Color.White)
                                         }
-                                    } else if (task.status == InstallTaskStatus.PAUSED || task.status == InstallTaskStatus.FAILED) {
+                                    } else if (isPaused || task.status == InstallTaskStatus.FAILED) {
                                         IconButton(onClick = { onResume(task.releaseName) }) {
                                             Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = Color(0xFF2ecc71))
                                         }
@@ -1118,7 +1127,7 @@ fun QueueManagerOverlay(
                                 LinearProgressIndicator(
                                     progress = task.progress.coerceIn(0f, 1f),
                                     modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
-                                    color = if (task.status == InstallTaskStatus.PAUSED) Color.Gray else MaterialTheme.colorScheme.secondary,
+                                    color = if (isPaused) Color.Gray else MaterialTheme.colorScheme.secondary,
                                     trackColor = Color.White.copy(alpha = 0.1f)
                                 )
                                 if (task.currentSize != null) {

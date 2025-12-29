@@ -50,11 +50,18 @@ enum class FilterStatus {
     UPDATE_AVAILABLE
 }
 
+enum class InstallStatus {
+    NOT_INSTALLED,
+    INSTALLED,
+    UPDATE_AVAILABLE
+}
+
 enum class InstallTaskStatus {
     QUEUED, DOWNLOADING, EXTRACTING, INSTALLING, PAUSED, COMPLETED, FAILED
 }
 
 fun InstallTaskStatus.isProcessing(): Boolean = 
+    this == InstallTaskStatus.QUEUED ||
     this == InstallTaskStatus.DOWNLOADING || 
     this == InstallTaskStatus.EXTRACTING || 
     this == InstallTaskStatus.INSTALLING
@@ -82,6 +89,23 @@ data class InstallState(
     val progress: Float = 0f,
     val currentSize: String? = null,
     val totalSize: String? = null
+)
+
+@Immutable
+data class GameItemState(
+    val name: String,
+    val version: String,
+    val installedVersion: String? = null,
+    val packageName: String,
+    val releaseName: String,
+    val iconFile: File?,
+    val installStatus: InstallStatus = InstallStatus.NOT_INSTALLED,
+    val queueStatus: InstallTaskStatus? = null,
+    val isFirstInQueue: Boolean = false,
+    val isDownloaded: Boolean = false,
+    val size: String? = null,
+    val description: String? = null,
+    val screenshotUrls: List<String>? = null
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -201,13 +225,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         counts
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
+    @Suppress("UNCHECKED_CAST")
     val games: StateFlow<List<GameItemState>> = combine(
         _allGames, 
         _searchQuery, 
         _installedPackages,
         _downloadedReleases,
-        _selectedFilter
-    ) { list, query, installed, downloaded, filter ->
+        _selectedFilter,
+        _installQueue
+    ) { args ->
+        val list = args[0] as List<GameData>
+        val query = args[1] as String
+        val installed = args[2] as Map<String, Long>
+        val downloaded = args[3] as Set<String>
+        val filter = args[4] as FilterStatus
+        val queue = args[5] as List<InstallTaskState>
+
+        val firstInQueue = queue.firstOrNull()?.releaseName
+
         val filteredByQuery = if (query.isBlank()) {
             list
         } else {
@@ -228,6 +263,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             
             val isDownloaded = downloaded.contains(game.releaseName)
+            val queueTask = queue.find { it.releaseName == game.releaseName }
 
             when (filter) {
                 FilterStatus.INSTALLED -> if (status == InstallStatus.NOT_INSTALLED) return@mapNotNull null
@@ -254,6 +290,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 releaseName = game.releaseName,
                 iconFile = iconFile,
                 installStatus = status,
+                queueStatus = queueTask?.status,
+                isFirstInQueue = game.releaseName == firstInQueue,
                 isDownloaded = isDownloaded,
                 size = if (game.sizeBytes != null && game.sizeBytes > 0) formatSize(game.sizeBytes) else if (game.sizeBytes == -1L) "Error" else null,
                 description = game.description,
@@ -660,8 +698,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         
         val existingTask = _installQueue.value.find { it.releaseName == releaseName }
         if (existingTask != null) {
-            viewModelScope.launch {
-                _events.emit(MainEvent.ShowMessage("${game.gameName} is already in the queue"))
+            val isFirst = _installQueue.value.firstOrNull()?.releaseName == releaseName
+            if (existingTask.status == InstallTaskStatus.PAUSED && isFirst) {
+                resumeInstall(releaseName)
+            } else {
+                viewModelScope.launch {
+                    _events.emit(MainEvent.ShowMessage("${game.gameName} is already in the queue"))
+                }
             }
             return
         }
@@ -731,18 +774,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun runTask(task: InstallTaskState) {
         val game = _allGames.value.find { it.releaseName == task.releaseName } ?: return
         
+        // Double check status hasn't changed to PAUSED before we start
+        val latestTask = _installQueue.value.find { it.releaseName == task.releaseName }
+        if (latestTask == null || latestTask.status != InstallTaskStatus.QUEUED) return
+
         // Auto-switch view if nothing is being viewed or the viewed task is not active
         val currentViewed = _installQueue.value.find { it.releaseName == _viewedReleaseName.value }
         if (currentViewed == null || !currentViewed.status.isProcessing()) {
             _viewedReleaseName.value = task.releaseName
         }
 
-        updateTaskStatus(task.releaseName, InstallTaskStatus.DOWNLOADING)
+        // Initialize active task state before updating status to ensure UI pause/cancel works immediately
         activeReleaseName = task.releaseName
-        
-        // Create a child job for the actual installation so we can cancel it without killing the parent queueProcessorJob
         val taskJob = SupervisorJob(coroutineContext[Job])
         currentTaskJob = taskJob
+
+        updateTaskStatus(task.releaseName, InstallTaskStatus.DOWNLOADING)
         
         try {
             withContext(taskJob + Dispatchers.IO) {
@@ -782,14 +829,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } catch (e: Exception) {
             if (e is CancellationException) {
                 Log.d(TAG, "Task cancelled/paused: ${task.gameName}")
+                // Do not remove from queue, status is already set to PAUSED by pauseInstall()
             } else {
                 Log.e(TAG, "Installation failed for ${task.gameName}", e)
                 updateTaskStatus(task.releaseName, InstallTaskStatus.FAILED, e.message)
                 _events.emit(MainEvent.ShowMessage("Failed to install ${task.gameName}: ${e.message}"))
             }
         } finally {
-            activeReleaseName = null
-            currentTaskJob = null
+            // Only clear shared state if it still belongs to this task (prevents race conditions with promoted tasks)
+            if (activeReleaseName == task.releaseName) {
+                activeReleaseName = null
+                currentTaskJob = null
+            }
             taskJob.cancel() 
         }
     }
@@ -829,9 +880,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resumeInstall(releaseName: String) {
-        _viewedReleaseName.value = releaseName
-        updateTaskStatus(releaseName, InstallTaskStatus.QUEUED)
-        startQueueProcessor()
+        // Only allow resume if it's the first in queue
+        val isFirst = _installQueue.value.firstOrNull()?.releaseName == releaseName
+        if (isFirst) {
+            _viewedReleaseName.value = releaseName
+            updateTaskStatus(releaseName, InstallTaskStatus.QUEUED)
+            startQueueProcessor()
+        }
     }
 
     fun cancelInstall(releaseName: String) {
@@ -863,20 +918,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun promoteTask(releaseName: String) {
-        val current = _installQueue.value
-        val task = current.find { it.releaseName == releaseName } ?: return
-        if (task.status == InstallTaskStatus.QUEUED || task.status == InstallTaskStatus.PAUSED) {
-            // Stop current if different
-            if (activeReleaseName != null && activeReleaseName != releaseName) {
+        val currentQueue = _installQueue.value
+        val task = currentQueue.find { it.releaseName == releaseName } ?: return
+        
+        if (task.status == InstallTaskStatus.QUEUED || task.status == InstallTaskStatus.PAUSED || task.status == InstallTaskStatus.FAILED) {
+            // Pause current processing task if any
+            val previousActive = activeReleaseName
+            if (previousActive != null && previousActive != releaseName) {
+                updateTaskStatus(previousActive, InstallTaskStatus.PAUSED)
                 currentTaskJob?.cancel()
             }
             
+            // Reorder queue: Put promoted task at the very top
             _installQueue.update { list ->
                 val filtered = list.filter { it.releaseName != releaseName }
                 listOf(task.copy(status = InstallTaskStatus.QUEUED)) + filtered
             }
             
             _viewedReleaseName.value = releaseName
+            
+            // Restart processor to pick up the new top task
+            queueProcessorJob?.cancel()
+            queueProcessorJob = null
             startQueueProcessor()
         }
     }
