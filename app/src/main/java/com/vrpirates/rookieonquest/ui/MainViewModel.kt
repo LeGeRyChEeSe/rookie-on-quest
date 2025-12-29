@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
 import android.util.Log
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.vrpirates.rookieonquest.BuildConfig
@@ -13,15 +14,11 @@ import com.vrpirates.rookieonquest.data.GameData
 import com.vrpirates.rookieonquest.data.MainRepository
 import com.vrpirates.rookieonquest.network.GitHubRelease
 import com.vrpirates.rookieonquest.network.GitHubService
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
-import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import retrofit2.Retrofit
@@ -29,6 +26,7 @@ import retrofit2.converter.gson.GsonConverterFactory
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration.Companion.milliseconds
 
 sealed class MainEvent {
@@ -51,6 +49,30 @@ enum class FilterStatus {
     DOWNLOADED,
     UPDATE_AVAILABLE
 }
+
+enum class InstallTaskStatus {
+    QUEUED, DOWNLOADING, EXTRACTING, INSTALLING, PAUSED, COMPLETED, FAILED
+}
+
+fun InstallTaskStatus.isProcessing(): Boolean = 
+    this == InstallTaskStatus.DOWNLOADING || 
+    this == InstallTaskStatus.EXTRACTING || 
+    this == InstallTaskStatus.INSTALLING
+
+@Immutable
+data class InstallTaskState(
+    val releaseName: String,
+    val gameName: String,
+    val packageName: String,
+    val status: InstallTaskStatus = InstallTaskStatus.QUEUED,
+    val progress: Float = 0f,
+    val message: String? = null,
+    val currentSize: String? = null,
+    val totalSize: String? = null,
+    val isDownloadOnly: Boolean = false,
+    val totalBytes: Long = 0L,
+    val error: String? = null
+)
 
 data class InstallState(
     val isInstalling: Boolean = false,
@@ -102,11 +124,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isAppVisible = MutableStateFlow(false)
 
+    // Queue Management
+    private val _installQueue = MutableStateFlow<List<InstallTaskState>>(emptyList())
+    val installQueue: StateFlow<List<InstallTaskState>> = _installQueue
+
+    private val _showInstallOverlay = MutableStateFlow(false)
+    val showInstallOverlay: StateFlow<Boolean> = _showInstallOverlay
+
+    private val _viewedReleaseName = MutableStateFlow<String?>(null)
+    val viewedReleaseName: StateFlow<String?> = _viewedReleaseName
+
+    private var queueProcessorJob: Job? = null
+    private var currentTaskJob: Job? = null
+    private var activeReleaseName: String? = null
+
     private var isPermissionFlowActive = false
     private var previousMissingCount = 0
     private var refreshJob: Job? = null
     private var sizeFetchJob: Job? = null
-    private var installJob: Job? = null
 
     private val githubService = Retrofit.Builder()
         .baseUrl("https://api.github.com/")
@@ -119,7 +154,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    // Get games directly from Room with intelligent sorting
     private val _allGames = repository.getAllGamesFlow()
         .map { list ->
             list.sortedWith(compareBy<GameData> {
@@ -195,7 +229,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             
             val isDownloaded = downloaded.contains(game.releaseName)
 
-            // Apply filter
             when (filter) {
                 FilterStatus.INSTALLED -> if (status == InstallStatus.NOT_INSTALLED) return@mapNotNull null
                 FilterStatus.DOWNLOADED -> if (!isDownloaded) return@mapNotNull null
@@ -203,7 +236,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 FilterStatus.ALL -> {}
             }
 
-            // Check all possible icon locations
             val iconLocations = listOf(
                 File(repository.iconsDir, "${game.packageName}.png"),
                 File(repository.iconsDir, "${game.packageName}.jpg"),
@@ -240,7 +272,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val firstChar = game.name.trim().firstOrNull()?.uppercaseChar() ?: '_'
                 val mappedChar = when {
                     firstChar == '_' -> '_'
-                    firstChar.isDigit() -> '#' // Use # to represent all digits
+                    firstChar.isDigit() -> '#' 
                     else -> firstChar
                 }
                 if (!charToIndex.containsKey(mappedChar)) {
@@ -256,14 +288,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing
 
-    private val _installState = MutableStateFlow(InstallState())
-    val installState: StateFlow<InstallState> = _installState
-
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
+
+    // Composite Install State for legacy UI support
+    val installState: StateFlow<InstallState> = _installQueue.map { queue ->
+        val active = queue.find { it.status.isProcessing() }
+        if (active != null) {
+            InstallState(
+                isInstalling = true,
+                packageName = active.packageName,
+                gameName = active.gameName,
+                message = active.message,
+                progress = active.progress,
+                currentSize = active.currentSize,
+                totalSize = active.totalSize
+            )
+        } else {
+            InstallState(isInstalling = false)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), InstallState())
     
     init {
-        // Only start heavy work AFTER update check
         viewModelScope.launch {
             _isUpdateCheckInProgress.value = true
             try {
@@ -338,10 +384,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Compares two version strings (e.g., "2.1.0" and "2.0.0").
-     * Returns true if [latest] is strictly greater than [current].
-     */
     private fun isVersionNewer(latest: String, current: String): Boolean {
         val latestParts = latest.split('.').mapNotNull { it.filter { c -> c.isDigit() }.toIntOrNull() }
         val currentParts = current.split('.').mapNotNull { it.filter { c -> c.isDigit() }.toIntOrNull() }
@@ -430,7 +472,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _isAppVisible.value = visible
             if (visible) {
                 priorityUpdateChannel.trySend(Unit)
-                refreshInstalledPackages() // Refresh when coming back to app
+                refreshInstalledPackages() 
                 refreshDownloadedReleases()
             }
         }
@@ -440,11 +482,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun startMetadataFetchLoop() {
         sizeFetchJob = viewModelScope.launch(Dispatchers.Default) {
             while (true) {
-                // Pause fetching if the app is in background to save resources
                 if (!_isAppVisible.value) {
-                    Log.d(TAG, "Metadata fetch loop suspended (app in background)")
                     _isAppVisible.first { it }
-                    Log.d(TAG, "Metadata fetch loop resumed")
                 }
 
                 val currentGames = _allGames.value
@@ -477,25 +516,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     needsData
                 }
 
-                // ONLY fetch info for games currently visible on screen
                 val target = candidates.find { prioritizedPackages.contains(it.packageName) }
 
                 if (target != null) {
                     try {
-                        Log.d(TAG, "Fetching metadata for visible game: ${target.gameName}")
                         repository.getGameRemoteInfo(target)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error fetching metadata for ${target.gameName}", e)
                         delay(2000)
                     }
                     
-                    // Small delay or wait for new priority signal before next fetch
                     select<Unit> {
                         priorityUpdateChannel.onReceive { }
                         onTimeout(100.milliseconds) { }
                     }
                 } else {
-                    // No visible games need metadata fetching, wait for a signal (scroll, search, etc.)
                     priorityUpdateChannel.receive()
                 }
             }
@@ -610,62 +644,250 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // Queue Management Methods
     fun installGame(releaseName: String, downloadOnly: Boolean = false) {
         if (_missingPermissions.value?.isNotEmpty() == true) {
             startPermissionFlow()
             return
         }
 
-        val game = _allGames.value.find { it.releaseName == releaseName } ?: return
-        val keepApk = _keepApks.value
-        
-        installJob?.cancel()
-        _error.value = null // Reset error state
-        
-        installJob = viewModelScope.launch {
-            try {
-                _installState.value = InstallState(
-                    isInstalling = true,
-                    packageName = game.packageName,
-                    gameName = game.gameName,
-                    message = "Connecting..."
-                )
-                
-                val apkFile = repository.installGame(
-                    game = game,
-                    keepApk = keepApk,
-                    downloadOnly = downloadOnly
-                ) { message, progress, current, total ->
-                    _installState.update { 
-                        it.copy(
-                            message = message,
-                            progress = progress,
-                            currentSize = if (total > 0) formatSize(current) else null,
-                            totalSize = if (total > 0) formatSize(total) else null
-                        )
-                    }
-                }
-                
-                refreshDownloadedReleases() // Refresh after download
+        if (releaseName.isEmpty()) {
+            showOverlay()
+            return
+        }
 
-                if (apkFile != null && !downloadOnly) {
-                    if (!_isAppVisible.value) {
-                        _installState.update { it.copy(message = "Ready to install. Return to app.") }
-                        _isAppVisible.first { it }
-                    }
-                    _events.emit(MainEvent.InstallApk(apkFile))
-                }
-            } catch (e: Exception) {
-                if (e !is kotlinx.coroutines.CancellationException) {
-                    Log.e(TAG, "Installation failed", e)
-                    val msg = e.message ?: "Unknown error"
-                    _events.emit(MainEvent.ShowMessage(msg))
-                    _error.value = "Error: $msg"
-                }
-            } finally {
-                _installState.value = InstallState(isInstalling = false)
+        val game = _allGames.value.find { it.releaseName == releaseName } ?: return
+        
+        val existingTask = _installQueue.value.find { it.releaseName == releaseName }
+        if (existingTask != null) {
+            viewModelScope.launch {
+                _events.emit(MainEvent.ShowMessage("${game.gameName} is already in the queue"))
+            }
+            return
+        }
+
+        val newTask = InstallTaskState(
+            releaseName = game.releaseName,
+            gameName = game.gameName,
+            packageName = game.packageName,
+            status = InstallTaskStatus.QUEUED,
+            isDownloadOnly = downloadOnly
+        )
+
+        val isShowing = _showInstallOverlay.value
+        val alreadyProcessing = _installQueue.value.any { it.status.isProcessing() }
+        
+        _installQueue.update { it + newTask }
+        
+        if (!isShowing && !alreadyProcessing) {
+            _viewedReleaseName.value = releaseName
+            _showInstallOverlay.value = true
+        } else {
+            viewModelScope.launch {
+                _events.emit(MainEvent.ShowMessage("${game.gameName} added to queue"))
             }
         }
+        
+        startQueueProcessor()
+    }
+
+    fun showOverlay() {
+        val currentQueue = _installQueue.value
+        if (currentQueue.isEmpty()) return
+
+        val taskToView = _viewedReleaseName.value?.let { v -> currentQueue.find { it.releaseName == v } }?.releaseName
+            ?: currentQueue.find { it.status.isProcessing() }?.releaseName 
+            ?: currentQueue.firstOrNull()?.releaseName
+            
+        if (taskToView != null) {
+            _viewedReleaseName.value = taskToView
+            _showInstallOverlay.value = true
+        }
+    }
+
+    private fun startQueueProcessor() {
+        if (queueProcessorJob?.isActive == true) return
+        
+        queueProcessorJob = viewModelScope.launch {
+            try {
+                while (isActive) {
+                    val nextTask = _installQueue.value.find { it.status == InstallTaskStatus.QUEUED }
+                    if (nextTask == null) {
+                        if (_installQueue.value.none { it.status == InstallTaskStatus.QUEUED }) {
+                            break 
+                        }
+                        delay(1000)
+                        continue
+                    }
+
+                    runTask(nextTask)
+                }
+            } finally {
+                queueProcessorJob = null
+            }
+        }
+    }
+
+    private suspend fun runTask(task: InstallTaskState) {
+        val game = _allGames.value.find { it.releaseName == task.releaseName } ?: return
+        
+        // Auto-switch view if nothing is being viewed or the viewed task is not active
+        val currentViewed = _installQueue.value.find { it.releaseName == _viewedReleaseName.value }
+        if (currentViewed == null || !currentViewed.status.isProcessing()) {
+            _viewedReleaseName.value = task.releaseName
+        }
+
+        updateTaskStatus(task.releaseName, InstallTaskStatus.DOWNLOADING)
+        activeReleaseName = task.releaseName
+        
+        // Create a child job for the actual installation so we can cancel it without killing the parent queueProcessorJob
+        val taskJob = SupervisorJob(coroutineContext[Job])
+        currentTaskJob = taskJob
+        
+        try {
+            withContext(taskJob + Dispatchers.IO) {
+                val apkFile = repository.installGame(
+                    game = game,
+                    keepApk = _keepApks.value,
+                    downloadOnly = task.isDownloadOnly
+                ) { message, progress, current, total ->
+                    updateTaskProgress(task.releaseName, message, progress, current, total)
+                }
+                
+                updateTaskStatus(task.releaseName, InstallTaskStatus.COMPLETED)
+                refreshDownloadedReleases()
+
+                if (apkFile != null && !task.isDownloadOnly) {
+                    withContext(Dispatchers.Main) {
+                        if (!_isAppVisible.value) {
+                            _isAppVisible.first { it }
+                        }
+                        _events.emit(MainEvent.InstallApk(apkFile))
+                    }
+                }
+            }
+            
+            delay(2000)
+            _installQueue.update { list -> list.filter { it.releaseName != task.releaseName } }
+            
+            if (_installQueue.value.isEmpty()) {
+                _showInstallOverlay.value = false
+                _viewedReleaseName.value = null
+            } else if (_viewedReleaseName.value == task.releaseName) {
+                val remaining = _installQueue.value
+                val nextActive = remaining.find { it.status.isProcessing() }
+                _viewedReleaseName.value = nextActive?.releaseName ?: remaining.firstOrNull()?.releaseName
+            }
+
+        } catch (e: Exception) {
+            if (e is CancellationException) {
+                Log.d(TAG, "Task cancelled/paused: ${task.gameName}")
+            } else {
+                Log.e(TAG, "Installation failed for ${task.gameName}", e)
+                updateTaskStatus(task.releaseName, InstallTaskStatus.FAILED, e.message)
+                _events.emit(MainEvent.ShowMessage("Failed to install ${task.gameName}: ${e.message}"))
+            }
+        } finally {
+            activeReleaseName = null
+            currentTaskJob = null
+            taskJob.cancel() 
+        }
+    }
+
+    private fun updateTaskStatus(releaseName: String, status: InstallTaskStatus, error: String? = null) {
+        _installQueue.update { list ->
+            list.map { 
+                if (it.releaseName == releaseName) it.copy(status = status, error = error) else it 
+            }
+        }
+    }
+
+    private fun updateTaskProgress(releaseName: String, message: String, progress: Float, current: Long, total: Long) {
+        _installQueue.update { list ->
+            list.map { 
+                if (it.releaseName == releaseName) {
+                    it.copy(
+                        message = message, 
+                        progress = progress, 
+                        currentSize = if (total > 0) formatSize(current) else null,
+                        totalSize = if (total > 0) formatSize(total) else null,
+                        totalBytes = total
+                    )
+                } else it 
+            }
+        }
+    }
+
+    fun pauseInstall(releaseName: String) {
+        val task = _installQueue.value.find { it.releaseName == releaseName } ?: return
+        if (task.status.isProcessing() || task.status == InstallTaskStatus.QUEUED) {
+            updateTaskStatus(releaseName, InstallTaskStatus.PAUSED)
+            if (releaseName == activeReleaseName) {
+                currentTaskJob?.cancel()
+            }
+        }
+    }
+
+    fun resumeInstall(releaseName: String) {
+        _viewedReleaseName.value = releaseName
+        updateTaskStatus(releaseName, InstallTaskStatus.QUEUED)
+        startQueueProcessor()
+    }
+
+    fun cancelInstall(releaseName: String) {
+        val task = _installQueue.value.find { it.releaseName == releaseName } ?: return
+        
+        if (releaseName == activeReleaseName) {
+            currentTaskJob?.cancel()
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.cleanupInstall(releaseName, task.totalBytes)
+        }
+
+        _installQueue.update { list -> list.filter { it.releaseName != releaseName } }
+        
+        val remaining = _installQueue.value
+        if (_viewedReleaseName.value == releaseName) {
+            _viewedReleaseName.value = remaining.find { it.status.isProcessing() }?.releaseName
+                ?: remaining.firstOrNull()?.releaseName
+        }
+
+        if (remaining.isEmpty()) {
+            _showInstallOverlay.value = false
+            _viewedReleaseName.value = null
+        } else {
+            // Restart processor just in case it stopped
+            startQueueProcessor()
+        }
+    }
+
+    fun promoteTask(releaseName: String) {
+        val current = _installQueue.value
+        val task = current.find { it.releaseName == releaseName } ?: return
+        if (task.status == InstallTaskStatus.QUEUED || task.status == InstallTaskStatus.PAUSED) {
+            // Stop current if different
+            if (activeReleaseName != null && activeReleaseName != releaseName) {
+                currentTaskJob?.cancel()
+            }
+            
+            _installQueue.update { list ->
+                val filtered = list.filter { it.releaseName != releaseName }
+                listOf(task.copy(status = InstallTaskStatus.QUEUED)) + filtered
+            }
+            
+            _viewedReleaseName.value = releaseName
+            startQueueProcessor()
+        }
+    }
+
+    fun setFocusedTask(releaseName: String) {
+        _viewedReleaseName.value = releaseName
+        _showInstallOverlay.value = true
+    }
+
+    fun hideInstallOverlay() {
+        _showInstallOverlay.value = false
     }
 
     fun toggleKeepApks() {
@@ -678,11 +900,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _events.emit(MainEvent.Uninstall(packageName))
         }
-    }
-    
-    fun cancelInstall() {
-        installJob?.cancel()
-        _installState.value = InstallState(isInstalling = false)
     }
 
     private fun formatSize(bytes: Long): String {

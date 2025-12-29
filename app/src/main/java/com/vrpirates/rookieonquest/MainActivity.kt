@@ -36,6 +36,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -46,6 +47,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -79,7 +81,9 @@ class MainActivity : ComponentActivity() {
 fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val games by viewModel.games.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
-    val installState by viewModel.installState.collectAsState()
+    val installQueue by viewModel.installQueue.collectAsState()
+    val showInstallOverlay by viewModel.showInstallOverlay.collectAsState()
+    val viewedReleaseName by viewModel.viewedReleaseName.collectAsState()
     val error by viewModel.error.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val selectedFilter by viewModel.selectedFilter.collectAsState()
@@ -101,7 +105,6 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     var showUpdateDialogState by remember { mutableStateOf<com.vrpirates.rookieonquest.network.GitHubRelease?>(null) }
     var showSettingsDialog by remember { mutableStateOf(false) }
 
-    // Update visible indices for priority fetching
     LaunchedEffect(listState, staggeredGridState) {
         snapshotFlow { 
             if (listState.layoutInfo.visibleItemsInfo.isNotEmpty()) listState.layoutInfo.visibleItemsInfo.map { it.index }
@@ -196,8 +199,11 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         when {
             isUpdateCheckInProgress -> LoadingScreen("Checking for updates...")
             isUpdateDownloading -> InstallationOverlay(
-                installState = InstallState(isInstalling = true, message = updateProgress, progress = -1f, gameName = "Rookie Update"),
-                onCancel = {}
+                activeTask = InstallTaskState(releaseName = "update", gameName = "Rookie Update", packageName = "", status = InstallTaskStatus.DOWNLOADING, message = updateProgress, progress = -1f),
+                onCancel = {},
+                onPause = {},
+                onResume = {},
+                onBackground = {}
             )
             showUpdateDialogState != null -> {
                 UpdateOverlay(
@@ -232,18 +238,29 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                             onSettingsClick = { showSettingsDialog = true },
                             onRefreshClick = { viewModel.refreshData() },
                             isRefreshing = isRefreshing,
-                            isInstalling = installState.isInstalling || isUpdateDownloading,
-                            permissionsMissing = false // Handled by outer when
+                            isInstalling = installQueue.any { it.status != InstallTaskStatus.COMPLETED && it.status != InstallTaskStatus.FAILED && it.status != InstallTaskStatus.PAUSED } || isUpdateDownloading,
+                            permissionsMissing = false 
                         )
                     },
-                    containerColor = Color.Black
+                    containerColor = Color.Black,
+                    bottomBar = {
+                        AnimatedVisibility(
+                            visible = !showInstallOverlay && installQueue.isNotEmpty(),
+                            enter = slideInVertically(initialOffsetY = { it }),
+                            exit = slideOutVertically(targetOffsetY = { it })
+                        ) {
+                            BottomQueueBar(
+                                queue = installQueue,
+                                onClick = { viewModel.showOverlay() }
+                            )
+                        }
+                    }
                 ) { innerPadding ->
                     Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
                         Row(modifier = Modifier.fillMaxSize()) {
                             if (games.isNotEmpty() && searchQuery.isEmpty() && selectedFilter == FilterStatus.ALL) {
                                 AlphabetIndexer(
                                     alphabetInfo = alphabetInfo,
-                                    isInstalling = installState.isInstalling,
                                     onLetterClick = { index ->
                                         coroutineScope.launch { 
                                             if (isWide) staggeredGridState.scrollToItem(index)
@@ -276,9 +293,9 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                     items(games, key = { it.packageName + it.releaseName }) { game ->
                                         GameListItem(
                                             game = game,
-                                            onInstallClick = { if (!installState.isInstalling) viewModel.installGame(game.releaseName) },
+                                            onInstallClick = { viewModel.installGame(game.releaseName) },
                                             onUninstallClick = { viewModel.uninstallGame(game.packageName) },
-                                            onDownloadOnlyClick = { if (!installState.isInstalling) viewModel.installGame(game.releaseName, downloadOnly = true) },
+                                            onDownloadOnlyClick = { viewModel.installGame(game.releaseName, downloadOnly = true) },
                                             isGridItem = true
                                         )
                                     }
@@ -292,20 +309,13 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                     items(games, key = { it.packageName + it.releaseName }) { game ->
                                         GameListItem(
                                             game = game,
-                                            onInstallClick = { if (!installState.isInstalling) viewModel.installGame(game.releaseName) },
+                                            onInstallClick = { viewModel.installGame(game.releaseName) },
                                             onUninstallClick = { viewModel.uninstallGame(game.packageName) },
-                                            onDownloadOnlyClick = { if (!installState.isInstalling) viewModel.installGame(game.releaseName, downloadOnly = true) }
+                                            onDownloadOnlyClick = { viewModel.installGame(game.releaseName, downloadOnly = true) }
                                         )
                                     }
                                 }
                             }
-                        }
-                        
-                        if (installState.isInstalling) {
-                            InstallationOverlay(
-                                installState = installState,
-                                onCancel = { viewModel.cancelInstall() }
-                            )
                         }
 
                         if (isRefreshing && games.isNotEmpty()) {
@@ -314,6 +324,19 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                     }
                 }
             }
+        }
+
+        if (showInstallOverlay) {
+            QueueManagerOverlay(
+                queue = installQueue,
+                viewedReleaseName = viewedReleaseName,
+                onTaskClick = { viewModel.setFocusedTask(it) },
+                onCancel = { viewModel.cancelInstall(it) },
+                onPause = { viewModel.pauseInstall(it) },
+                onResume = { viewModel.resumeInstall(it) },
+                onPromote = { viewModel.promoteTask(it) },
+                onClose = { viewModel.hideInstallOverlay() }
+            )
         }
 
         if (showSettingsDialog) {
@@ -342,9 +365,8 @@ fun SetupLayout(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .clickable(enabled = false) { } // Block all clicks to underlying app
+            .clickable(enabled = false) { }
     ) {
-        // Decorative Top Gradient
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -736,7 +758,13 @@ fun ErrorScreen(message: String, onRetry: () -> Unit) {
 }
 
 @Composable
-fun InstallationOverlay(installState: InstallState, onCancel: () -> Unit) {
+fun InstallationOverlay(
+    activeTask: InstallTaskState, 
+    onCancel: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onBackground: () -> Unit
+) {
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = Color.Black.copy(alpha = 0.95f)
@@ -746,10 +774,10 @@ fun InstallationOverlay(installState: InstallState, onCancel: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            val progress = if (installState.progress >= 0f) installState.progress else null
+            val progress = if (activeTask.progress >= 0f) activeTask.progress else null
             
             Text(
-                text = installState.gameName ?: "Processing",
+                text = activeTask.gameName,
                 style = MaterialTheme.typography.headlineMedium,
                 color = Color.White,
                 fontWeight = FontWeight.ExtraBold,
@@ -764,7 +792,7 @@ fun InstallationOverlay(installState: InstallState, onCancel: () -> Unit) {
                         progress = progress,
                         modifier = Modifier.size(200.dp),
                         strokeWidth = 8.dp,
-                        color = MaterialTheme.colorScheme.secondary,
+                        color = if (activeTask.status == InstallTaskStatus.PAUSED) Color.Gray else MaterialTheme.colorScheme.secondary,
                         trackColor = Color.White.copy(alpha = 0.1f)
                     )
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -774,9 +802,9 @@ fun InstallationOverlay(installState: InstallState, onCancel: () -> Unit) {
                             color = Color.White,
                             fontWeight = FontWeight.Black
                         )
-                        if (installState.currentSize != null) {
+                        if (activeTask.currentSize != null) {
                             Text(
-                                text = "${installState.currentSize} / ${installState.totalSize}",
+                                text = "${activeTask.currentSize} / ${activeTask.totalSize}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.Gray
                             )
@@ -794,22 +822,127 @@ fun InstallationOverlay(installState: InstallState, onCancel: () -> Unit) {
             Spacer(modifier = Modifier.height(48.dp))
             
             Text(
-                text = installState.message ?: "",
+                text = activeTask.message ?: activeTask.status.name,
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White,
                 textAlign = TextAlign.Center
             )
+
+            if (activeTask.error != null) {
+                Text(
+                    text = activeTask.error,
+                    color = Color(0xFFCF6679),
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
             
             Spacer(modifier = Modifier.height(64.dp))
             
-            if (installState.message?.contains("update", ignoreCase = true) == false) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
+            ) {
+                if (activeTask.status == InstallTaskStatus.PAUSED || activeTask.status == InstallTaskStatus.FAILED) {
+                    Button(
+                        onClick = onResume,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.height(56.dp).weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ecc71))
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("RESUME", fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onPause,
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.height(56.dp).weight(1f)
+                    ) {
+                        Icon(Icons.Default.Pause, contentDescription = null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("PAUSE", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+
                 OutlinedButton(
                     onClick = onCancel,
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
+                    border = BorderStroke(1.dp, Color(0xFFCF6679).copy(alpha = 0.5f)),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.height(56.dp).fillMaxWidth(0.5f)
+                    modifier = Modifier.height(56.dp).weight(1f)
                 ) {
-                    Text("CANCEL", color = Color.White, fontWeight = FontWeight.Bold)
+                    Icon(Icons.Default.Close, contentDescription = null, tint = Color(0xFFCF6679))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("CANCEL", color = Color(0xFFCF6679), fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            TextButton(
+                onClick = onBackground,
+                modifier = Modifier.fillMaxWidth(0.6f)
+            ) {
+                Text("Run in background", color = Color.Gray, fontWeight = FontWeight.Medium)
+            }
+        }
+    }
+}
+
+@Composable
+fun BottomQueueBar(queue: List<InstallTaskState>, onClick: () -> Unit) {
+    val activeTask = queue.find { it.status.isProcessing() }
+        ?: queue.firstOrNull() ?: return
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        color = Color(0xFF1A1A1A),
+        tonalElevation = 8.dp
+    ) {
+        Column {
+            LinearProgressIndicator(
+                progress = activeTask.progress.coerceIn(0f, 1f),
+                modifier = Modifier.fillMaxWidth().height(2.dp),
+                color = if (activeTask.status == InstallTaskStatus.PAUSED) Color.Gray else MaterialTheme.colorScheme.secondary,
+                trackColor = Color.Transparent
+            )
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if (activeTask.status == InstallTaskStatus.PAUSED) Icons.Default.Pause else Icons.Default.Download,
+                    contentDescription = null,
+                    tint = Color.Gray,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = activeTask.gameName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "${(activeTask.progress * 100).toInt()}%",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray,
+                    fontWeight = FontWeight.Bold
+                )
+                if (queue.size > 1) {
+                    Text(
+                        text = " (+${queue.size - 1})",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
@@ -846,7 +979,6 @@ fun SettingsDialog(
 @Composable
 fun AlphabetIndexer(
     alphabetInfo: Pair<List<Char>, Map<Char, Int>>,
-    isInstalling: Boolean,
     onLetterClick: (Int) -> Unit
 ) {
     LazyColumn(
@@ -869,8 +1001,7 @@ fun AlphabetIndexer(
                         .height(30.dp)
                         .clickable(
                             interactionSource = interactionSource,
-                            indication = null,
-                            enabled = !isInstalling
+                            indication = null
                         ) {
                             alphabetInfo.second[char]?.let { index ->
                                 onLetterClick(index)
@@ -882,10 +1013,137 @@ fun AlphabetIndexer(
                         text = char.toString(),
                         fontSize = 12.sp,
                         fontWeight = if (isHovered) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isHovered) MaterialTheme.colorScheme.secondary else if (isInstalling) Color.DarkGray else Color.Gray,
+                        color = if (isHovered) MaterialTheme.colorScheme.secondary else Color.Gray,
                         modifier = Modifier.scale(scale)
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun QueueManagerOverlay(
+    queue: List<InstallTaskState>,
+    viewedReleaseName: String?,
+    onTaskClick: (String) -> Unit,
+    onCancel: (String) -> Unit,
+    onPause: (String) -> Unit,
+    onResume: (String) -> Unit,
+    onPromote: (String) -> Unit,
+    onClose: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color.Black.copy(alpha = 0.95f)
+    ) {
+        Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "INSTALLATION QUEUE (${queue.size})",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.White,
+                    fontWeight = FontWeight.Black
+                )
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(queue, key = { it.releaseName }) { task ->
+                    val isViewed = task.releaseName == viewedReleaseName
+                    val isProcessing = task.status.isProcessing()
+                    
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onTaskClick(task.releaseName) },
+                        color = if (isViewed) Color.White.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.05f),
+                        shape = RoundedCornerShape(16.dp),
+                        border = if (isViewed) BorderStroke(1.dp, MaterialTheme.colorScheme.secondary) else null
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = task.gameName,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = task.message ?: task.status.name,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (task.status == InstallTaskStatus.FAILED) Color(0xFFCF6679) else Color.Gray
+                                    )
+                                }
+                                
+                                if (task.status == InstallTaskStatus.QUEUED || task.status == InstallTaskStatus.PAUSED) {
+                                    IconButton(onClick = { onPromote(task.releaseName) }) {
+                                        Icon(Icons.Default.VerticalAlignTop, contentDescription = "Prioritize", tint = MaterialTheme.colorScheme.secondary)
+                                    }
+                                }
+                                
+                                Row {
+                                    if (isProcessing) {
+                                        IconButton(onClick = { onPause(task.releaseName) }) {
+                                            Icon(Icons.Default.Pause, contentDescription = "Pause", tint = Color.White)
+                                        }
+                                    } else if (task.status == InstallTaskStatus.PAUSED || task.status == InstallTaskStatus.FAILED) {
+                                        IconButton(onClick = { onResume(task.releaseName) }) {
+                                            Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = Color(0xFF2ecc71))
+                                        }
+                                    }
+                                    
+                                    IconButton(onClick = { onCancel(task.releaseName) }) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Cancel", tint = Color(0xFFCF6679))
+                                    }
+                                }
+                            }
+                            
+                            if (isProcessing || (task.progress > 0 && task.status != InstallTaskStatus.COMPLETED)) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                LinearProgressIndicator(
+                                    progress = task.progress.coerceIn(0f, 1f),
+                                    modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                                    color = if (task.status == InstallTaskStatus.PAUSED) Color.Gray else MaterialTheme.colorScheme.secondary,
+                                    trackColor = Color.White.copy(alpha = 0.1f)
+                                )
+                                if (task.currentSize != null) {
+                                    Text(
+                                        text = "${task.currentSize} / ${task.totalSize}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.Gray,
+                                        modifier = Modifier.align(Alignment.End).padding(top = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            Button(
+                onClick = onClose,
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+            ) {
+                Text("BACK TO CATALOG", fontWeight = FontWeight.Black)
             }
         }
     }

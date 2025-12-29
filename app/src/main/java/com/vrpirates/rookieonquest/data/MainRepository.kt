@@ -447,6 +447,7 @@ class MainRepository(private val context: Context) {
                     }
                 }
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Log.e(TAG, "Error downloading segment $seg", e)
                 throw Exception("Download failed: ${e.message ?: "Unknown error"}")
             }
@@ -498,6 +499,7 @@ class MainRepository(private val context: Context) {
                     }
                     extractionMarker.createNewFile()
                 } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     Log.e(TAG, "Extraction failed", e)
                     extractionDir.deleteRecursively()
                     extractionDir.mkdirs()
@@ -563,6 +565,40 @@ class MainRepository(private val context: Context) {
         
         gameTempDir.deleteRecursively()
         externalApk
+    }
+
+    fun cleanupInstall(releaseName: String, totalBytes: Long) {
+        val hash = md5(releaseName + "\n")
+        val gameTempDir = File(tempInstallRoot, hash)
+        if (!gameTempDir.exists()) return
+
+        val combinedFile = File(gameTempDir, "combined.7z")
+        val extractionMarker = File(gameTempDir, "extraction_done.marker")
+        val extractionDir = File(gameTempDir, "extracted")
+
+        // 1. If extraction is incomplete, delete extracted files
+        if (!extractionMarker.exists() && extractionDir.exists()) {
+            extractionDir.deleteRecursively()
+        }
+
+        // 2. If archive is incomplete, delete it
+        if (combinedFile.exists() && combinedFile.length() < totalBytes) {
+            combinedFile.delete()
+        }
+        
+        // Also check segments if combined.7z doesn't exist yet
+        if (!combinedFile.exists()) {
+            val segments = gameTempDir.listFiles { _, name -> name.endsWith(".7z.001") || name.endsWith(".apk") }
+            // If we are cancelling, we might want to delete them if they are not complete
+            // But usually "Cancel" implies cleanup everything. 
+            // The requirement says "si l'archive est incomplète on supprime l'archive".
+            // If we have segments, they are the archive.
+            gameTempDir.deleteRecursively()
+        }
+
+        if (gameTempDir.exists() && gameTempDir.listFiles()?.isEmpty() == true) {
+            gameTempDir.delete()
+        }
     }
 
     private fun copyFileWithScanner(source: File, target: File) {
