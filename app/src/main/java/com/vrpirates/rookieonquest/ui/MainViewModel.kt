@@ -362,6 +362,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _isUpdateCheckInProgress.value = false
             }
         }
+
+        // Auto-refresh downloaded and installed status when catalog is loaded or changes
+        viewModelScope.launch {
+            _allGames.collect { games ->
+                if (games.isNotEmpty()) {
+                    refreshDownloadedReleases(games)
+                    refreshInstalledPackages()
+                }
+            }
+        }
     }
 
     fun refreshInstalledPackages() {
@@ -377,14 +387,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun refreshDownloadedReleases() {
+    fun refreshDownloadedReleases(gamesOverride: List<GameData>? = null) {
         viewModelScope.launch {
             try {
                 val downloaded = withContext(Dispatchers.IO) {
                     val dir = repository.downloadsDir
                     if (!dir.exists()) return@withContext emptySet<String>()
                     
-                    val games = _allGames.value
+                    val games = gamesOverride ?: _allGames.value
                     if (games.isEmpty()) return@withContext emptySet<String>()
 
                     val releaseNamesWithFolders = dir.listFiles()?.filter { it.isDirectory }?.map { it.name }?.toSet() ?: emptySet()
@@ -589,11 +599,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _error.value = null
             try {
                 withContext(Dispatchers.IO) {
-                    val installed = repository.getInstalledPackagesMap()
-                    _installedPackages.value = installed
-                    refreshDownloadedReleases()
+                    // 1. Sync Catalog first to have the latest games list
                     val config = repository.fetchConfig()
                     repository.syncCatalog(config.baseUri)
+                    
+                    // 2. Refresh statuses now that we have the latest catalog
+                    // We get the fresh games list directly to be immediate
+                    val freshGames = repository.getAllGamesFlow().first()
+                    
+                    val installed = repository.getInstalledPackagesMap()
+                    _installedPackages.value = installed
+                    refreshDownloadedReleases(freshGames)
                 }
                 priorityUpdateChannel.trySend(Unit)
             } catch (e: Exception) {
