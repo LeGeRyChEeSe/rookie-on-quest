@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2025-12-30
+
+### ✨ New Features
+- **Install Queue & Manager:** Implemented a background installation queue with pause/resume capabilities, task promotion, and cancellable operations.
+- **Game Metadata:** Added support for game descriptions and screenshots with an expandable UI.
+- **File Management:** Added ability to delete downloaded game files with a confirmation dialog.
+- **Smart Features:** Smart install and download caching, better game identification, and catalog deduplication.
+- **UI/UX Overhaul:** Major interface updates, optimizations for large screens, and unified progress display.
+- **Filtering:** Added status filtering and visual indicators for downloaded games.
+- **Setup Experience:** Unified setup layout with immersive overlays for updates and permissions.
+
+### 🚀 Improvements
+- **Performance:** Reduced memory usage and optimized for large screens.
+- **Infrastructure:** Windows compatibility for build tools (Makefile) and release signing configuration.
+- **User Feedback:** Added snackbar messages for better user feedback.
+
 ## [2.1.1] - 2025-12-28
 
 ### 🔧 Fixes
