@@ -1,5 +1,8 @@
 package com.vrpirates.rookieonquest
 
+import android.content.ClipboardManager
+import android.content.ClipData
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -170,6 +173,16 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 }
                 is MainEvent.ShowMessage -> {
                     snackbarHostState.showSnackbar(event.message)
+                }
+                is MainEvent.CopyLogs -> {
+                    try {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = ClipData.newPlainText("Rookie Logs", event.logs)
+                        clipboard.setPrimaryClip(clip)
+                        snackbarHostState.showSnackbar("Logs copied to clipboard")
+                    } catch (e: Exception) {
+                        snackbarHostState.showSnackbar("Failed to copy logs: ${e.message}")
+                    }
                 }
             }
         }
@@ -359,6 +372,8 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             SettingsDialog(
                 keepApks = keepApks,
                 onToggleKeepApks = { viewModel.toggleKeepApks() },
+                onExportDiagnostics = { viewModel.exportDiagnostics(toFile = false) },
+                onSaveDiagnostics = { viewModel.exportDiagnostics(toFile = true) },
                 onDismiss = { showSettingsDialog = false }
             )
         }
@@ -901,7 +916,7 @@ fun InstallationOverlay(
                         }
                     } else if (activeTask.status.isProcessing()) {
                         OutlinedButton(
-                            onClick = onPause,
+                            onClick = { onPause() },
                             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.height(56.dp).weight(1f)
@@ -1005,6 +1020,8 @@ fun BottomQueueBar(queue: List<InstallTaskState>, onClick: () -> Unit) {
 fun SettingsDialog(
     keepApks: Boolean,
     onToggleKeepApks: () -> Unit,
+    onExportDiagnostics: () -> Unit,
+    onSaveDiagnostics: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -1017,6 +1034,32 @@ fun SettingsDialog(
                     supportingContent = { Text("Saved to Download/RookieOnQuest") },
                     trailingContent = { Switch(checked = keepApks, onCheckedChange = { onToggleKeepApks() }) },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+                
+                Divider(modifier = Modifier.padding(vertical = 8.dp), color = Color.White.copy(alpha = 0.1f))
+                
+                ListItem(
+                    headlineContent = { Text("Export Diagnostics") },
+                    supportingContent = { Text("Copy application logs to clipboard") },
+                    trailingContent = {
+                        IconButton(onClick = onExportDiagnostics) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy logs", tint = MaterialTheme.colorScheme.secondary)
+                        }
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier = Modifier.clickable { onExportDiagnostics() }
+                )
+
+                ListItem(
+                    headlineContent = { Text("Save Logs to Storage") },
+                    supportingContent = { Text("Export txt file to Download/RookieOnQuest") },
+                    trailingContent = {
+                        IconButton(onClick = onSaveDiagnostics) {
+                            Icon(Icons.Default.Save, contentDescription = "Save logs", tint = MaterialTheme.colorScheme.secondary)
+                        }
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier = Modifier.clickable { onSaveDiagnostics() }
                 )
             }
         },

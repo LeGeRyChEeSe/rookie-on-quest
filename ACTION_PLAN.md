@@ -8,6 +8,11 @@ This document outlines the strategic priorities for the project, categorized by 
 
 | Milestone                      | Impact                                                                                  |
 |:-------------------------------|:----------------------------------------------------------------------------------------|
+| **Install Queue & Manager**    | Implemented a robust background queue with pause/resume and task promotion.             |
+| **Rich Metadata System**       | Integrated game descriptions and screenshots into a new expandable UI.                  |
+| **File Management**            | Added ability to delete downloaded APKs and manage storage directly from the app.       |
+| **Smart Filtering**            | Added status-based filtering (Downloaded, Installed, Updates) and better sorting.       |
+| **Unified Setup Flow**         | Integrated permission handling and update checks into a cohesive startup experience.     |
 | **Extraction Resilience**      | Implemented state markers and cleanup to fix interrupted extraction issues. (#11)       |
 | **Storage Validation**         | Added pre-flight disk space checks using `StatFs` to prevent mid-download failures.     |
 | **Installed Version Tracking** | Compare `versionCode` against local `PackageInfo` to display "Update Available" badges. |
@@ -16,24 +21,20 @@ This document outlines the strategic priorities for the project, categorized by 
 | **Intelligent Sorting**        | Added fast alphabetical indexing with custom symbol handling.                           |
 | **Metadata Caching**           | Local Room database for game sizes and metadata persistence. (#6)                       |
 | **Auto-Update System**         | GitHub API integration for in-app updates and changelogs. (#10)                         |
-| **Advanced Settings**          | Options for APK retention and "Download Only" workflows. (#7, #9)                       |
-| **Unified Progress UI**        | Reactive progress indicators for the entire Download → Extract → Install lifecycle.     |
+| **Diagnostic Export**         | Added one-tap log collection and clipboard export in settings for troubleshooting.      |
 
 ---
 
 ## 🔴 Priority 1: Critical Stability & Core Logic
 *Essential fixes and fundamental features required for a reliable experience.*
 
-### 🛠️ Resilience & Error Handling
-- [x] **Extraction State Management:** State machine implementation for extraction to handle interruptions (#11).
-- [x] **Pre-Flight Storage Checks:** Disk space validation using `StatFs` before initiating downloads.
-
 ### 📦 Package Management
-- [x] **Update Detection:** Real-time "Update Available" indicators by comparing remote and local version codes.
 - [ ] **Shizuku Integration:** Implement silent, background installation to remove manual ADB/FileProvider friction.
+- [x] **Install Queue:** Background task management with user-controlled priority and pause/resume.
 
 ### 🎨 Core Feedback
-- [x] **Unified Progress Tracking:** Replace static UI elements with reactive progress indicators for the entire lifecycle (Download → Extract → Install).
+- [x] **Unified Progress Tracking:** Reactive progress indicators for the entire lifecycle (Download → Extract → Install).
+- [x] **Expanded Details:** High-density UI for screenshots and game descriptions.
 
 ---
 
@@ -41,15 +42,15 @@ This document outlines the strategic priorities for the project, categorized by 
 *Enhancements to streamline user interaction and download efficiency.*
 
 ### 📥 Queue Management
-- [ ] **Background WorkManager:** Implement a robust sequential download queue that persists across app restarts.
+- [ ] **Background WorkManager:** Migrate the current queue to WorkManager for persistence across app restarts and OS-level scheduling.
 - [ ] **Foreground Service:** Active notification system to track and manage ongoing background operations.
 
 ### 🔍 Discovery Tools
 - [ ] **Clean Title Parsing:** Regex-based cleaning to improve catalog readability (stripping prefixes and underscores).
-- [ ] **Smart Filtering:** Category-based chips (Games/Apps/Tools) and multi-criteria sorting.
+- [x] **Smart Filtering:** Multi-criteria filtering by installation status and download state.
 
 ### 🌐 Connectivity
-- [ ] **Offline Resilience:** Full Room-backed browsing mode for users with intermittent connectivity.
+- [x] **Offline Resilience:** Full Room-backed browsing mode for users with intermittent connectivity.
 
 ---
 
@@ -61,11 +62,8 @@ This document outlines the strategic priorities for the project, categorized by 
 - [ ] **Skeleton UI:** Shimmer effects for a smoother perceived loading experience during database or image fetches.
 
 ### 📝 Content Depth
-- [ ] **Detailed Component:** BottomSheet/Detail view with descriptions, screenshots, and direct uninstallation controls.
+- [x] **Detailed Component:** Integrated descriptions, screenshots, and direct uninstallation controls.
 - [ ] **Data Management:** Integrated backup and restore functionality for `/Android/data/` save files.
-
-### 🎙️ Accessibility
-- [ ] **Voice Commands:** Speech-to-text integration for hands-free search within the HMD.
 
 ---
 
@@ -74,4 +72,4 @@ This document outlines the strategic priorities for the project, categorized by 
 
 ### 🏗️ Architecture
 - [ ] **Extensible Repositories:** Support for user-defined JSON catalog sources within settings.
-- [ ] **Diagnostic Export:** "One-tap" log collection and export to facilitate remote troubleshooting of complex issues.
+- [x] **Diagnostic Export:** "One-tap" log collection and export to facilitate remote troubleshooting.

@@ -24,6 +24,8 @@ import okhttp3.Request
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
@@ -36,6 +38,7 @@ sealed class MainEvent {
     object RequestStoragePermission : MainEvent()
     data class ShowUpdatePopup(val release: GitHubRelease) : MainEvent()
     data class ShowMessage(val message: String) : MainEvent()
+    data class CopyLogs(val logs: String) : MainEvent()
 }
 
 enum class RequiredPermission {
@@ -989,6 +992,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _events.emit(MainEvent.ShowMessage("Download deleted"))
             } catch (e: Exception) {
                 _events.emit(MainEvent.ShowMessage("Failed to delete download: ${e.message}"))
+            }
+        }
+    }
+
+    fun exportDiagnostics(toFile: Boolean = false) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _events.emit(MainEvent.ShowMessage("Collecting logs..."))
+                val process = Runtime.getRuntime().exec("logcat -d")
+                val logs = process.inputStream.bufferedReader().use { it.readText() }
+                
+                if (toFile) {
+                    val fileName = repository.saveLogs(logs)
+                    _events.emit(MainEvent.ShowMessage("Logs saved to Download/RookieOnQuest/$fileName"))
+                } else {
+                    withContext(Dispatchers.Main) {
+                        _events.emit(MainEvent.CopyLogs(logs))
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to export logs", e)
+                _events.emit(MainEvent.ShowMessage("Failed to collect logs: ${e.message}"))
             }
         }
     }

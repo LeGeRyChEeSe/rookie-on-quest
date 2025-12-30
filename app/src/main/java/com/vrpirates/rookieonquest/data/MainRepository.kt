@@ -32,6 +32,9 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -65,6 +68,7 @@ class MainRepository(private val context: Context) {
     private val catalogCacheFile = File(context.filesDir, "VRP-GameList.txt")
     private val tempInstallRoot = File(context.cacheDir, "install_temp")
     val downloadsDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "RookieOnQuest")
+    val logsDir = File(downloadsDir, "logs").apply { if (!exists()) mkdirs() }
 
     fun getAllGamesFlow(): Flow<List<GameData>> = gameDao.getAllGames().map { entities ->
         entities.map { it.toData() }
@@ -651,6 +655,16 @@ class MainRepository(private val context: Context) {
             // Scan to update Android media store/MTP view
             MediaScannerConnection.scanFile(context, arrayOf(downloadsDir.absolutePath), null, null)
         }
+    }
+
+    suspend fun saveLogs(logs: String): String = withContext(Dispatchers.IO) {
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+        val fileName = "rookie_logs_$timestamp.txt"
+        val file = File(logsDir, fileName)
+        if (!logsDir.exists()) logsDir.mkdirs()
+        file.writeText(logs)
+        MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), null, null)
+        fileName
     }
 
     private suspend fun copyFileWithScanner(source: File, target: File) = withContext(Dispatchers.IO) {
