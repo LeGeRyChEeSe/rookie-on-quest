@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
@@ -199,14 +200,18 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         
         when {
             isUpdateCheckInProgress -> LoadingScreen("Checking for updates...")
-            isUpdateDownloading -> InstallationOverlay(
-                activeTask = InstallTaskState(releaseName = "update", gameName = "Rookie Update", packageName = "", status = InstallTaskStatus.DOWNLOADING, message = updateProgress, progress = -1f),
-                onCancel = {},
-                onPause = {},
-                onResume = {},
-                onBackground = {}
-            )
+            isUpdateDownloading -> {
+                BackHandler(enabled = true) { /* Block back button during update */ }
+                InstallationOverlay(
+                    activeTask = InstallTaskState(releaseName = "update", gameName = "Rookie Update", packageName = "", status = InstallTaskStatus.DOWNLOADING, message = updateProgress, progress = -1f),
+                    onCancel = {},
+                    onPause = {},
+                    onResume = {},
+                    onBackground = {}
+                )
+            }
             showUpdateDialogState != null -> {
+                BackHandler(enabled = true) { /* Block back button during update dialog */ }
                 UpdateOverlay(
                     release = showUpdateDialogState!!,
                     onDismiss = { 
@@ -396,6 +401,7 @@ fun SetupLayout(
     onPrimaryClick: () -> Unit,
     secondaryButtonText: String? = null,
     onSecondaryClick: (() -> Unit)? = null,
+    isScrollable: Boolean = true,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Box(
@@ -419,7 +425,7 @@ fun SetupLayout(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(32.dp)
-                .verticalScroll(rememberScrollState()),
+                .then(if (isScrollable) Modifier.verticalScroll(rememberScrollState()) else Modifier),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
@@ -550,8 +556,7 @@ fun UpdateOverlay(
         iconColor = Color(0xFF3498db),
         primaryButtonText = "UPDATE NOW",
         onPrimaryClick = onConfirm,
-        secondaryButtonText = "LATER",
-        onSecondaryClick = onDismiss
+        isScrollable = false
     ) {
         Surface(
             color = Color.White.copy(alpha = 0.05f),
@@ -570,7 +575,7 @@ fun UpdateOverlay(
                     )
                 }
                 Spacer(modifier = Modifier.height(16.dp))
-                Box(modifier = Modifier.heightIn(max = 250.dp)) {
+                Box(modifier = Modifier.heightIn(max = 250.dp).verticalScroll(rememberScrollState())) {
                     Text(
                         text = parseMarkdown(release.body),
                         style = MaterialTheme.typography.bodyMedium,
@@ -802,6 +807,7 @@ fun InstallationOverlay(
     onResume: () -> Unit,
     onBackground: () -> Unit
 ) {
+    val isAppUpdate = activeTask.releaseName == "update"
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = Color.Black.copy(alpha = 0.95f)
@@ -877,53 +883,62 @@ fun InstallationOverlay(
             
             Spacer(modifier = Modifier.height(64.dp))
             
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
-            ) {
-                if (activeTask.status == InstallTaskStatus.PAUSED || activeTask.status == InstallTaskStatus.FAILED) {
-                    Button(
-                        onClick = onResume,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ecc71)),
-                        modifier = Modifier.height(56.dp).weight(1f)
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = Color.White)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("RESUME", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                } else if (activeTask.status.isProcessing()) {
-                    OutlinedButton(
-                        onClick = onPause,
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.height(56.dp).weight(1f)
-                    ) {
-                        Icon(Icons.Default.Pause, contentDescription = "Pause", tint = Color.White)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("PAUSE", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                }
-
-                OutlinedButton(
-                    onClick = { onCancel() },
-                    border = BorderStroke(1.dp, Color(0xFFCF6679).copy(alpha = 0.5f)),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.height(56.dp).weight(1f)
+            if (!isAppUpdate) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
                 ) {
-                    Icon(Icons.Default.Close, contentDescription = null, tint = Color(0xFFCF6679))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("CANCEL", color = Color(0xFFCF6679), fontWeight = FontWeight.Bold)
+                    if (activeTask.status == InstallTaskStatus.PAUSED || activeTask.status == InstallTaskStatus.FAILED) {
+                        Button(
+                            onClick = onResume,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ecc71)),
+                            modifier = Modifier.height(56.dp).weight(1f)
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("RESUME", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    } else if (activeTask.status.isProcessing()) {
+                        OutlinedButton(
+                            onClick = onPause,
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.height(56.dp).weight(1f)
+                        ) {
+                            Icon(Icons.Default.Pause, contentDescription = "Pause", tint = Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("PAUSE", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = { onCancel() },
+                        border = BorderStroke(1.dp, Color(0xFFCF6679).copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.height(56.dp).weight(1f)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = null, tint = Color(0xFFCF6679))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("CANCEL", color = Color(0xFFCF6679), fontWeight = FontWeight.Bold)
+                    }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
-            TextButton(
-                onClick = onBackground,
-                modifier = Modifier.fillMaxWidth(0.6f)
-            ) {
-                Text("Run in background", color = Color.Gray, fontWeight = FontWeight.Medium)
+                TextButton(
+                    onClick = onBackground,
+                    modifier = Modifier.fillMaxWidth(0.6f)
+                ) {
+                    Text("Run in background", color = Color.Gray, fontWeight = FontWeight.Medium)
+                }
+            } else {
+                Text(
+                    text = "Application update is mandatory. Please wait.",
+                    color = Color.Gray,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center
+                )
             }
         }
     }
