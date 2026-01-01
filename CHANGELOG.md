@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-01-01
+
+### ✨ New Features
+- **Cache Management:** Added a "Clear Download Cache" option in settings to free up storage space.
+- **Smart Cleaning:** The app now automatically verifies installed games and cleans up temporary installation files to save space.
+
+### 🚀 Improvements
+- **Enhanced Installation Logic:** Significant improvements to how the app handles complex game file structures (nested folders, split OBBs).
+- **Download Verification:** Better detection of already downloaded files to prevent unnecessary redownloads.
+- **Recursive Parsing:** Added support for downloading games with deep folder structures from the catalog.
+
+### 🔧 Fixes
+- **OBB Placement:** Fixed issues where OBB files in subfolders weren't being placed correctly.
+
 ## [2.2.1] - 2025-12-30
 
 ### 🔧 Fixes

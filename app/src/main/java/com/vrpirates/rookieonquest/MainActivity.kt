@@ -374,6 +374,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 onToggleKeepApks = { viewModel.toggleKeepApks() },
                 onExportDiagnostics = { viewModel.exportDiagnostics(toFile = false) },
                 onSaveDiagnostics = { viewModel.exportDiagnostics(toFile = true) },
+                onClearCache = { viewModel.clearCache() },
                 onDismiss = { showSettingsDialog = false }
             )
         }
@@ -1022,6 +1023,7 @@ fun SettingsDialog(
     onToggleKeepApks: () -> Unit,
     onExportDiagnostics: () -> Unit,
     onSaveDiagnostics: () -> Unit,
+    onClearCache: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -1034,6 +1036,20 @@ fun SettingsDialog(
                     supportingContent = { Text("Saved to Download/RookieOnQuest") },
                     trailingContent = { Switch(checked = keepApks, onCheckedChange = { onToggleKeepApks() }) },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+                
+                Divider(modifier = Modifier.padding(vertical = 8.dp), color = Color.White.copy(alpha = 0.1f))
+
+                ListItem(
+                    headlineContent = { Text("Clear Download Cache") },
+                    supportingContent = { Text("Delete temporary installation files") },
+                    trailingContent = {
+                        IconButton(onClick = onClearCache) {
+                            Icon(Icons.Default.DeleteSweep, contentDescription = "Clear cache", tint = Color(0xFFCF6679))
+                        }
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier = Modifier.clickable { onClearCache() }
                 )
                 
                 Divider(modifier = Modifier.padding(vertical = 8.dp), color = Color.White.copy(alpha = 0.1f))

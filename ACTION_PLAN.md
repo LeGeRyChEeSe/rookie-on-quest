@@ -22,6 +22,7 @@ This document outlines the strategic priorities for the project, categorized by 
 | **Metadata Caching**           | Local Room database for game sizes and metadata persistence. (#6)                       |
 | **Auto-Update System**         | GitHub API integration for in-app updates and changelogs. (#10)                         |
 | **Diagnostic Export**         | Added one-tap log collection and clipboard export in settings for troubleshooting.      |
+| **Cache Management**           | Added settings option to clear temporary download cache and auto-cleanup logic.         |
 
 ---
 

@@ -261,13 +261,13 @@ class MainRepository(private val context: Context) {
         }
     }
 
-    suspend fun getGameRemoteInfo(game: GameData): Triple<List<String>, Long, Map<String, Any?>> = withContext(Dispatchers.IO) {
+    suspend fun getGameRemoteInfo(game: GameData): Triple<Map<String, Long>, Long, Map<String, Any?>> = withContext(Dispatchers.IO) {
         val config = cachedConfig ?: throw Exception("Config not loaded")
         val hash = md5(game.releaseName + "\n")
         val sanitizedBase = if (config.baseUri.endsWith("/")) config.baseUri else "${config.baseUri}/"
         val dirUrl = "$sanitizedBase$hash/"
 
-        val segments = mutableListOf<String>()
+        val rawSegments = mutableListOf<String>()
         val screenshotUrls = mutableListOf<String>()
         
         // Use local metadata if available
@@ -285,23 +285,29 @@ class MainRepository(private val context: Context) {
                 
                 val html = response.body?.string() ?: ""
                 
-                // Extract install segments
-                val segmentMatcher = java.util.regex.Pattern.compile("href\\s*=\\s*\"([^\"]+\\.(7z\\.\\d{3}|apk))\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html)
-                while (segmentMatcher.find()) {
-                    segmentMatcher.group(1)?.let { segments.add(it) }
+                // Extract all relevant entries (files or folders)
+                val entryMatcher = java.util.regex.Pattern.compile("href\\s*=\\s*\"([^\"]+)\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html)
+                while (entryMatcher.find()) {
+                    val entry = entryMatcher.group(1) ?: continue
+                    if (entry.startsWith(".") || entry.startsWith("_") || entry.contains("notes.txt") || entry.contains("screenshot") || entry == "../") continue
+                    
+                    if (entry.endsWith("/")) {
+                        // It's a folder (like com.beatgames.beatsaber/)
+                        fetchAllFilesFromDir(dirUrl + entry, entry).forEach { rawSegments.add(it) }
+                    } else if (entry.lowercase().let { it.endsWith(".apk") || it.endsWith(".obb") || it.contains(".7z.") || it.endsWith(".7z") }) {
+                        rawSegments.add(entry)
+                    }
                 }
 
                 // Extract screenshots ( gameplay images found on mirror )
                 val imgMatcher = java.util.regex.Pattern.compile("href\\s*=\\s*\"([^\"]+\\.(jpg|png|jpeg))\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html)
                 while (imgMatcher.find()) {
                     val imgName = imgMatcher.group(1) ?: continue
-                    // Skip images that are likely icons/thumbnails (contain package name)
                     if (!imgName.contains(game.packageName, ignoreCase = true)) {
                         screenshotUrls.add(dirUrl + imgName)
                     }
                 }
 
-                // Extract description from remote notes.txt if local is missing
                 if (description == null && html.contains("notes.txt", ignoreCase = true)) {
                     val notesUrl = dirUrl + "notes.txt"
                     try {
@@ -316,9 +322,14 @@ class MainRepository(private val context: Context) {
                     }
                 }
             }
-            segments.sort()
+            
+            // Deduplicate segments by filename (prefer root version)
+            val uniqueSegments = rawSegments.groupBy { it.substringAfterLast('/') }
+                .map { (_, list) -> 
+                    list.minByOrNull { it.count { c -> c == '/' } }!!
+                }
 
-            val totalSize = segments.map { seg ->
+            val segmentMap = uniqueSegments.map { seg ->
                 async {
                     val headRequest = Request.Builder()
                         .url(dirUrl + seg)
@@ -326,21 +337,49 @@ class MainRepository(private val context: Context) {
                         .header("User-Agent", "rclone/v1.72.1")
                         .build()
                     okHttpClient.newCall(headRequest).await().use { response ->
-                        response.header("Content-Length")?.toLongOrNull() ?: 0L
+                        val size = response.header("Content-Length")?.toLongOrNull() ?: 0L
+                        seg to size
                     }
                 }
-            }.awaitAll().sum()
+            }.awaitAll().toMap()
+            
+            val totalSize = segmentMap.values.sum()
             
             gameDao.updateSize(game.releaseName, totalSize)
             gameDao.updateMetadata(game.releaseName, description, screenshotUrls.joinToString("|"))
             
-            Triple(segments, totalSize, mapOf("description" to description, "screenshots" to screenshotUrls))
+            Triple(segmentMap, totalSize, mapOf("description" to description, "screenshots" to screenshotUrls))
         } catch (e: Exception) {
             if (e.message?.contains("404") == true) {
                  gameDao.updateSize(game.releaseName, -1L)
             }
             throw e
         }
+    }
+
+    private suspend fun fetchAllFilesFromDir(baseUrl: String, prefix: String): List<String> = withContext(Dispatchers.IO) {
+        val files = mutableListOf<String>()
+        try {
+            val request = Request.Builder().url(baseUrl).header("User-Agent", "rclone/v1.72.1").build()
+            okHttpClient.newCall(request).await().use { response ->
+                if (response.isSuccessful) {
+                    val html = response.body?.string() ?: ""
+                    val matcher = java.util.regex.Pattern.compile("href\\s*=\\s*\"([^\"]+)\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html)
+                    while (matcher.find()) {
+                        val entry = matcher.group(1) ?: continue
+                        if (entry.startsWith(".") || entry == "../") continue
+                        if (entry.endsWith("/")) {
+                            files.addAll(fetchAllFilesFromDir(baseUrl + entry, prefix + entry))
+                        } else {
+                            files.add(prefix + entry)
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error listing dir $baseUrl", e)
+        }
+        files
     }
 
     private fun checkAvailableSpace(requiredBytes: Long) {
@@ -371,172 +410,203 @@ class MainRepository(private val context: Context) {
             return@withContext null
         }
 
-        // 2. Check for existing APK in downloads or external storage
+        // 2. IMPORTANT: Always fetch ground truth from server first to verify what we have locally
+        onProgress("Verifying with server...", 0.02f, 0, 0)
+        val (remoteSegments, totalBytes, _) = getGameRemoteInfo(game)
+        if (remoteSegments.isEmpty()) throw Exception("No installable files found on server")
+
+        val hash = md5(game.releaseName + "\n")
+        val gameTempDir = File(tempInstallRoot, hash)
+        val extractionDir = File(gameTempDir, "extracted")
         val safeDirName = game.releaseName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
         val gameDownloadDir = File(downloadsDir, safeDirName)
-        val safeGameName = game.gameName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
-        val cachedApk = File(gameDownloadDir, "${safeGameName}_v${game.versionCode}.apk")
 
-        if (downloadOnly && isApkMatching(cachedApk, game.packageName, targetVersion)) {
-            onProgress("Already downloaded", 1f, 0, 0)
+        // 3. Verify integrity of existing files (temp or downloads)
+        var isLocalReady = false
+        
+        // Check if standard APK is already in Downloads and valid
+        val safeGameName = game.gameName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+        val apkFileName = "${safeGameName}_v${game.versionCode}_${game.packageName}.apk"
+        val cachedApk = File(gameDownloadDir, apkFileName)
+        
+        // Find any APK in download dir if standard one doesn't match
+        var foundApk: File? = if (isApkMatching(cachedApk, game.packageName, targetVersion)) cachedApk else null
+        if (foundApk == null && gameDownloadDir.exists()) {
+             foundApk = gameDownloadDir.listFiles()?.find { isApkMatching(it, game.packageName, targetVersion) }
+        }
+
+        if (foundApk != null) {
+            // APK is good, now check OBBs
+            val localObbDir = File(gameDownloadDir, game.packageName)
+            val hasObbFolder = localObbDir.exists() && localObbDir.isDirectory && (localObbDir.list()?.isNotEmpty() ?: false)
+            val hasLooseObbs = gameDownloadDir.listFiles()?.any { it.name.endsWith(".obb", true) } ?: false
+            
+            // If the game needs OBBs (remote segments have them), check if we have them
+            val needsObbs = remoteSegments.keys.any { it.contains("/") || it.endsWith(".obb") }
+            if (!needsObbs || hasObbFolder || hasLooseObbs) {
+                isLocalReady = true
+            }
+        }
+
+        // If not found in Downloads, check the legacy way (temp/extracted)
+        if (!isLocalReady) {
+            for ((seg, remoteSize) in remoteSegments) {
+                val fileInTemp = File(gameTempDir, seg)
+                val fileInExtracted = File(extractionDir, seg)
+                if (!(fileInTemp.exists() && fileInTemp.length() == remoteSize) && 
+                    !(fileInExtracted.exists() && fileInExtracted.length() == remoteSize)) {
+                    isLocalReady = false
+                    break
+                }
+                isLocalReady = true
+            }
+        }
+
+        if (isLocalReady && downloadOnly) {
+            onProgress("Already downloaded and verified", 1f, totalBytes, totalBytes)
             delay(1000)
             return@withContext null
         }
 
-        var readyApk: File? = null
-        
-        // Check if it's already in the external installer dir (cancelled previous install)
-        val externalApkDir = context.getExternalFilesDir(null)
-        readyApk = externalApkDir?.listFiles()?.find { isApkMatching(it, game.packageName, targetVersion) }
-        
-        // If not found, check in downloads directory
-        if (readyApk == null && isApkMatching(cachedApk, game.packageName, targetVersion)) {
-            onProgress("Found in downloads...", 0.85f, 0, 0)
-            val externalApk = File(context.getExternalFilesDir(null), cachedApk.name)
-            try {
-                copyFileWithScanner(cachedApk, externalApk)
-                readyApk = externalApk
-                
-                // Also try to move OBBs if they exist in the download dir
-                val obbs = gameDownloadDir.listFiles { _, name -> name.endsWith(".obb", true) }
-                if (!obbs.isNullOrEmpty()) {
-                    onProgress("Installing OBBs from downloads...", 0.95f, 0, 0)
-                    moveObbFiles(obbs, game.packageName)
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to copy APK from downloads: ${e.message}")
+        if (!isLocalReady) {
+            // Need to download or resume
+            val config = cachedConfig ?: throw Exception("Config not loaded")
+            val password = decodedPassword ?: throw Exception("Password not available")
+            val sanitizedBase = if (config.baseUri.endsWith("/")) config.baseUri else "${config.baseUri}/"
+            val dirUrl = "$sanitizedBase$hash/"
+
+            // Pre-flight space check
+            val isSevenZ = remoteSegments.keys.any { it.contains(".7z") }
+            val multiplier = if (isSevenZ) if (downloadOnly || keepApk) 2.9 else 1.9 else 1.1
+            checkAvailableSpace((totalBytes * multiplier).toLong())
+
+            if (!gameTempDir.exists()) gameTempDir.mkdirs()
+            
+            var totalBytesDownloaded = 0L
+            remoteSegments.forEach { (seg, _) ->
+                val f = File(gameTempDir, seg)
+                if (f.exists()) totalBytesDownloaded += f.length()
             }
-        }
 
-        if (!downloadOnly && readyApk != null) {
-            onProgress("Launching installer...", 1f, 0, 0)
-            delay(500)
-            return@withContext readyApk
-        }
+            for ((index, entry) in remoteSegments.entries.withIndex()) {
+                val seg = entry.key
+                val remoteSize = entry.value
+                currentCoroutineContext().ensureActive()
+                val localFile = File(gameTempDir, seg)
+                
+                val existingSize = if (localFile.exists()) localFile.length() else 0L
+                if (existingSize >= remoteSize) continue // Already have this part
 
-        val config = cachedConfig ?: throw Exception("Config not loaded")
-        val password = decodedPassword ?: throw Exception("Password not available")
-        val hash = md5(game.releaseName + "\n")
-        val sanitizedBase = if (config.baseUri.endsWith("/")) config.baseUri else "${config.baseUri}/"
-        val dirUrl = "$sanitizedBase$hash/"
-        
-        onProgress("Connecting to mirror...", 0.05f, 0, 0)
+                val segUrl = dirUrl + seg
+                val segRequest = Request.Builder()
+                    .url(segUrl)
+                    .header("User-Agent", "rclone/v1.72.1")
+                    .header("Range", "bytes=$existingSize-")
+                    .build()
 
-        val (segments, totalBytes, _) = getGameRemoteInfo(game)
-        if (segments.isEmpty()) throw Exception("No installable files found")
-
-        // Pre-flight space check
-        val isSevenZ = segments.any { it.contains(".7z") }
-        val multiplier = if (isSevenZ) if (downloadOnly || keepApk) 2.9 else 1.9 else 1.1
-        checkAvailableSpace((totalBytes * multiplier).toLong())
-
-        val gameTempDir = File(tempInstallRoot, hash)
-        if (!gameTempDir.exists()) gameTempDir.mkdirs()
-        
-        val localPaths = mutableListOf<File>()
-        var totalBytesDownloaded = 0L
-
-        for (seg in segments) {
-            val f = File(gameTempDir, seg)
-            if (f.exists()) totalBytesDownloaded += f.length()
-        }
-
-        for ((index, seg) in segments.withIndex()) {
-            currentCoroutineContext().ensureActive()
-            val localFile = File(gameTempDir, seg)
-            localPaths.add(localFile)
-            val segUrl = dirUrl + seg
-            
-            val existingSize = if (localFile.exists()) localFile.length() else 0L
-            
-            val segRequest = Request.Builder()
-                .url(segUrl)
-                .header("User-Agent", "rclone/v1.72.1")
-                .header("Range", "bytes=$existingSize-")
-                .build()
-
-            try {
-                okHttpClient.newCall(segRequest).await().use { response ->
-                    if (response.code == 416) {
-                        // Already done or range not satisfiable
-                    } else {
-                        if (!response.isSuccessful) throw Exception("Failed to download $seg: ${response.code}")
-                        val isResume = response.code == 206
-                        val body = response.body ?: throw Exception("Empty body for $seg")
-                        
-                        body.byteStream().use { input ->
-                            FileOutputStream(localFile, isResume).use { output ->
-                                val buffer = ByteArray(8192 * 8)
-                                var bytesRead: Int
-                                while (true) {
-                                    currentCoroutineContext().ensureActive()
-                                    bytesRead = input.read(buffer)
-                                    if (bytesRead == -1) break
-                                    output.write(buffer, 0, bytesRead)
-                                    totalBytesDownloaded += bytesRead
-                                    
-                                    val overallProgress = if (totalBytes > 0) totalBytesDownloaded.toFloat() / totalBytes else 0f
-                                    onProgress(
-                                        "Downloading ${game.gameName} (Part ${index + 1}/${segments.size})", 
-                                        overallProgress * 0.8f,
-                                        totalBytesDownloaded,
-                                        totalBytes
-                                    ) 
+                try {
+                    okHttpClient.newCall(segRequest).await().use { response ->
+                        if (response.code != 416) {
+                            if (!response.isSuccessful) throw Exception("Failed to download $seg: ${response.code}")
+                            val isResume = response.code == 206
+                            val body = response.body ?: throw Exception("Empty body for $seg")
+                            
+                            body.byteStream().use { input ->
+                                localFile.parentFile?.let { if (!it.exists()) it.mkdirs() }
+                                FileOutputStream(localFile, isResume).use { output ->
+                                    val buffer = ByteArray(8192 * 8)
+                                    var bytesRead: Int
+                                    while (true) {
+                                        currentCoroutineContext().ensureActive()
+                                        bytesRead = input.read(buffer)
+                                        if (bytesRead == -1) break
+                                        output.write(buffer, 0, bytesRead)
+                                        totalBytesDownloaded += bytesRead
+                                        
+                                        val overallProgress = if (totalBytes > 0) totalBytesDownloaded.toFloat() / totalBytes else 0f
+                                        onProgress(
+                                            "Downloading ${game.gameName} (${index + 1}/${remoteSegments.size})", 
+                                            overallProgress * 0.8f,
+                                            totalBytesDownloaded,
+                                            totalBytes
+                                        ) 
+                                    }
                                 }
                             }
                         }
                     }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    Log.e(TAG, "Error downloading segment $seg", e)
+                    throw Exception("Download failed: ${e.message ?: "Unknown error"}")
                 }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                Log.e(TAG, "Error downloading segment $seg", e)
-                throw Exception("Download failed: ${e.message ?: "Unknown error"}")
             }
         }
 
-        currentCoroutineContext().ensureActive()
-        val extractionDir = File(gameTempDir, "extracted").apply { if (!exists()) mkdirs() }
+        // 4. Processing / Extraction
+        if (!extractionDir.exists()) extractionDir.mkdirs()
         val extractionMarker = File(gameTempDir, "extraction_done.marker")
+        
+        // Skip extraction if already decompressed in Downloads
+        val skipExtraction = isLocalReady && !extractionMarker.exists() && foundApk != null
 
-        if (!extractionMarker.exists()) {
-            onProgress("Preparing extraction...", 0.82f, totalBytes, totalBytes)
+        if (!extractionMarker.exists() && !skipExtraction) {
+            onProgress("Preparing files...", 0.82f, totalBytes, totalBytes)
+            val isArchive = remoteSegments.keys.any { it.contains(".7z") }
             
-            if (localPaths.size == 1 && localPaths[0].name.endsWith(".apk", true)) {
-                localPaths[0].copyTo(File(extractionDir, localPaths[0].name), overwrite = true)
+            if (!isArchive) {
+                remoteSegments.keys.forEach { seg ->
+                    val source = File(gameTempDir, seg)
+                    val target = File(extractionDir, seg)
+                    if (source.exists()) {
+                        target.parentFile?.let { if (!it.exists()) it.mkdirs() }
+                        source.copyTo(target, overwrite = true)
+                    }
+                }
+                extractionMarker.createNewFile()
             } else {
                 val combinedFile = File(gameTempDir, "combined.7z")
-                
-                if (!combinedFile.exists() || combinedFile.length() < totalBytes) {
+                val archiveParts = remoteSegments.filter { it.key.contains(".7z") }
+                val archiveTotalBytes = archiveParts.values.sum()
+
+                if (!combinedFile.exists() || combinedFile.length() < archiveTotalBytes) {
                     onProgress("Merging files...", 0.85f, totalBytes, totalBytes)
                     combinedFile.outputStream().use { out ->
-                        localPaths.forEach { part -> 
-                            currentCoroutineContext().ensureActive()
-                            part.inputStream().use { input ->
-                                copyToCancellable(input, out)
+                        // Ensure correct order for merge and that files exist
+                        archiveParts.keys
+                            .sortedWith(compareBy { it })
+                            .forEach { seg -> 
+                                currentCoroutineContext().ensureActive()
+                                val partFile = File(gameTempDir, seg)
+                                if (!partFile.exists()) throw Exception("Part file missing: $seg")
+                                partFile.inputStream().use { input ->
+                                    copyToCancellable(input, out)
+                                }
                             }
-                        }
                     }
                 }
                 
                 onProgress("Extracting...", 0.88f, totalBytes, totalBytes)
-                currentCoroutineContext().ensureActive()
+                val password = decodedPassword ?: ""
                 try {
                     SevenZFile.builder().setFile(combinedFile).setPassword(password.toCharArray()).get().use { sevenZFile ->
                         var entry = sevenZFile.nextEntry
                         while (entry != null) {
                             currentCoroutineContext().ensureActive()
-                            if (entry.name.endsWith(".apk", true) || entry.name.endsWith(".obb", true)) {
-                                val fileName = File(entry.name).name
-                                val outFile = File(extractionDir, fileName)
-                                
-                                FileOutputStream(outFile).use { out ->
-                                    val buffer = ByteArray(8192 * 8)
-                                    var bytesRead: Int
-                                    while (true) {
-                                        currentCoroutineContext().ensureActive()
-                                        bytesRead = sevenZFile.read(buffer)
-                                        if (bytesRead == -1) break
-                                        out.write(buffer, 0, bytesRead)
+                            if (entry.name.endsWith(".apk", true) || entry.name.endsWith(".obb", true) || entry.name.contains(game.packageName)) {
+                                val outFile = File(extractionDir, entry.name)
+                                if (entry.isDirectory) outFile.mkdirs()
+                                else {
+                                    outFile.parentFile?.let { if (!it.exists()) it.mkdirs() }
+                                    FileOutputStream(outFile).use { out ->
+                                        val buffer = ByteArray(8192 * 8)
+                                        var bytesRead: Int
+                                        while (true) {
+                                            currentCoroutineContext().ensureActive()
+                                            bytesRead = sevenZFile.read(buffer)
+                                            if (bytesRead == -1) break
+                                            out.write(buffer, 0, bytesRead)
+                                        }
                                     }
                                 }
                             }
@@ -545,48 +615,105 @@ class MainRepository(private val context: Context) {
                     }
                     extractionMarker.createNewFile()
                 } catch (e: Exception) {
-                    if (e is CancellationException) throw e
                     Log.e(TAG, "Extraction failed", e)
                     extractionDir.deleteRecursively()
-                    extractionDir.mkdirs()
-                    throw Exception("Extraction failed: ${e.message ?: "Check your storage or password"}")
+                    throw Exception("Extraction failed: ${e.message}")
                 } finally {
                     if (combinedFile.exists()) combinedFile.delete()
                 }
             }
         }
 
-        val apks = extractionDir.listFiles { _, name -> name.endsWith(".apk", true) }
-        if (apks.isNullOrEmpty()) {
-            extractionMarker.delete()
-            throw Exception("No APK found in extracted files")
+        // 5. Finalize Installation
+        val apks = mutableListOf<File>()
+        extractionDir.walkTopDown().forEach { if (it.name.endsWith(".apk", true)) apks.add(it) }
+        
+        // If not found in extraction, check download dir
+        if (apks.isEmpty() && gameDownloadDir.exists()) {
+            gameDownloadDir.walkTopDown().forEach { file ->
+                if (file.name.endsWith(".apk", true) && (file.name.contains(game.packageName) || apks.isEmpty())) {
+                    apks.add(file)
+                }
+            }
         }
-        val finalApk = apks[0]
 
-        val obbs = extractionDir.listFiles { _, name -> name.endsWith(".obb", true) }
+        if (apks.isEmpty() && !downloadOnly) {
+            extractionMarker.delete()
+            throw Exception("No APK found for installation")
+        }
+        val finalApk = apks.getOrNull(0)
+
+        var packageFolder: File? = null
+        extractionDir.walkTopDown().forEach { file ->
+            if (file.isDirectory && file.name == game.packageName) {
+                packageFolder = file
+                return@forEach
+            }
+        }
+        
+        // Check download dir for OBB folder if not found in extraction
+        if (packageFolder == null && gameDownloadDir.exists()) {
+            gameDownloadDir.walkTopDown().forEach { file ->
+                if (file.isDirectory && file.name == game.packageName) {
+                    packageFolder = file
+                    return@forEach
+                }
+            }
+        }
+        
+        val looseObbs = mutableListOf<File>()
+        val obbSearchDirs = mutableListOf(extractionDir)
+        if (gameDownloadDir.exists()) obbSearchDirs.add(gameDownloadDir)
+        
+        obbSearchDirs.forEach { dir ->
+            dir.walkTopDown().forEach { file ->
+                if (file.isFile && file.name.endsWith(".obb", true)) {
+                    if (packageFolder == null || !file.absolutePath.startsWith(packageFolder!!.absolutePath)) {
+                        if (!looseObbs.any { it.name == file.name }) {
+                            looseObbs.add(file)
+                        }
+                    }
+                }
+            }
+        }
         
         if (downloadOnly || keepApk) {
-            onProgress("Saving files...", 0.92f, totalBytes, totalBytes)
+            onProgress("Saving to Downloads...", 0.92f, totalBytes, totalBytes)
             try {
                 if (!downloadsDir.exists()) downloadsDir.mkdirs()
-                val safeDirName = game.releaseName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
-                val gameDownloadDir = File(downloadsDir, safeDirName)
                 if (!gameDownloadDir.exists()) gameDownloadDir.mkdirs()
                 
-                // Use a better name for the saved APK
-                val safeGameName = game.gameName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
-                val targetApk = File(gameDownloadDir, "${safeGameName}_v${game.versionCode}.apk")
-                
-                copyFileWithScanner(finalApk, targetApk)
-                
-                obbs?.forEach { obb ->
-                    val targetObb = File(gameDownloadDir, obb.name)
-                    copyFileWithScanner(obb, targetObb)
+                finalApk?.let {
+                    val targetApk = File(gameDownloadDir, apkFileName)
+                    if (it.absolutePath != targetApk.absolutePath) {
+                        copyFileWithScanner(it, targetApk)
+                    }
                 }
-                Log.d(TAG, "Successfully saved files to ${gameDownloadDir.absolutePath}")
+                
+                val finalObbDir = File(gameDownloadDir, game.packageName).apply { if (!exists()) mkdirs() }
+                packageFolder?.let { pf ->
+                    if (pf.absolutePath != finalObbDir.absolutePath) {
+                        pf.walkTopDown().forEach { source ->
+                            if (!source.name.endsWith(".apk", true)) {
+                                val relPath = source.relativeTo(pf).path
+                                val dest = File(finalObbDir, relPath)
+                                if (source.isDirectory) dest.mkdirs()
+                                else {
+                                    source.copyTo(dest, overwrite = true)
+                                    MediaScannerConnection.scanFile(context, arrayOf(dest.absolutePath), null, null)
+                                }
+                            }
+                        }
+                    }
+                }
+                looseObbs.forEach { loose ->
+                    val targetObb = File(finalObbDir, loose.name)
+                    if (loose.absolutePath != targetObb.absolutePath) {
+                        copyFileWithScanner(loose, targetObb)
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to save files to downloads", e)
-                if (downloadOnly) throw e
             }
         }
 
@@ -596,55 +723,78 @@ class MainRepository(private val context: Context) {
             return@withContext null
         }
 
-        if (!obbs.isNullOrEmpty()) {
+        val hasObbs = packageFolder != null || looseObbs.isNotEmpty()
+        if (hasObbs) {
             onProgress("Installing OBBs...", 0.96f, totalBytes, totalBytes)
-            moveObbFiles(obbs, game.packageName)
+            moveObbFiles(packageFolder, looseObbs, game.packageName)
+        }
+
+        // Save info for post-install verification
+        try {
+            File(gameTempDir, "install.info").writeText("${game.packageName}\n$hasObbs")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write install info", e)
         }
 
         onProgress("Launching installer...", 1f, totalBytes, totalBytes)
+        if (finalApk == null || !finalApk.exists()) {
+             throw Exception("Final APK not found for installation")
+        }
         val externalApk = File(context.getExternalFilesDir(null), finalApk.name)
-        try {
-            finalApk.copyTo(externalApk, overwrite = true)
-        } catch (e: Exception) {
-            throw Exception("Failed to copy APK to installer directory: ${e.message}")
+        finalApk.copyTo(externalApk, overwrite = true)
+        
+        externalApk
+    }
+
+    suspend fun verifyAndCleanupInstalls(excludedReleaseNames: Set<String> = emptySet()) = withContext(Dispatchers.IO) {
+        if (!tempInstallRoot.exists()) return@withContext
+        
+        val installedPackages = getInstalledPackagesMap()
+        val excludedHashes = excludedReleaseNames.map { md5(it + "\n") }.toSet()
+        
+        tempInstallRoot.listFiles()?.forEach { dir ->
+            if (!dir.isDirectory) return@forEach
+            if (excludedHashes.contains(dir.name)) return@forEach // Skip active task folder
+
+            val infoFile = File(dir, "install.info")
+            if (!infoFile.exists()) return@forEach
+            
+            try {
+                val lines = infoFile.readLines()
+                if (lines.size >= 2) {
+                    val packageName = lines[0]
+                    val obbRequired = lines[1].toBoolean()
+                    
+                    if (installedPackages.containsKey(packageName)) {
+                        var obbOk = true
+                        if (obbRequired) {
+                            val obbDir = File(Environment.getExternalStorageDirectory(), "Android/obb/$packageName")
+                            obbOk = obbDir.exists() && (obbDir.list()?.isNotEmpty() ?: false)
+                        }
+                        
+                        if (obbOk) {
+                            Log.d(TAG, "Verification successful for $packageName, deleting temp files in ${dir.name}")
+                            dir.deleteRecursively()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error verifying install for ${dir.name}", e)
+            }
         }
         
-        gameTempDir.deleteRecursively()
-        externalApk
+        context.getExternalFilesDir(null)?.listFiles()?.forEach { file ->
+            if (file.name.endsWith(".apk") && System.currentTimeMillis() - file.lastModified() > 1000 * 60 * 60 * 24) {
+                file.delete()
+            }
+        }
     }
 
     fun cleanupInstall(releaseName: String, totalBytes: Long) {
         val hash = md5(releaseName + "\n")
         val gameTempDir = File(tempInstallRoot, hash)
         if (!gameTempDir.exists()) return
-
-        val combinedFile = File(gameTempDir, "combined.7z")
-        val extractionMarker = File(gameTempDir, "extraction_done.marker")
-        val extractionDir = File(gameTempDir, "extracted")
-
-        // 1. If extraction is incomplete, delete extracted files
-        if (!extractionMarker.exists() && extractionDir.exists()) {
-            extractionDir.deleteRecursively()
-        }
-
-        // 2. If archive is incomplete, delete it
-        if (combinedFile.exists() && combinedFile.length() < totalBytes) {
-            combinedFile.delete()
-        }
-        
-        // Also check segments if combined.7z doesn't exist yet
-        if (!combinedFile.exists()) {
-            val segments = gameTempDir.listFiles { _, name -> name.endsWith(".7z.001") || name.endsWith(".apk") }
-            // If we are cancelling, we might want to delete them if they are not complete
-            // But usually "Cancel" implies cleanup everything. 
-            // The requirement says "si l'archive est incomplète on supprime l'archive".
-            // If we have segments, they are the archive.
-            gameTempDir.deleteRecursively()
-        }
-
-        if (gameTempDir.exists() && gameTempDir.listFiles()?.isEmpty() == true) {
-            gameTempDir.delete()
-        }
+        gameTempDir.deleteRecursively()
     }
 
     suspend fun deleteDownloadedGame(releaseName: String) = withContext(Dispatchers.IO) {
@@ -652,7 +802,6 @@ class MainRepository(private val context: Context) {
         val gameDownloadDir = File(downloadsDir, safeDirName)
         if (gameDownloadDir.exists()) {
             gameDownloadDir.deleteRecursively()
-            // Scan to update Android media store/MTP view
             MediaScannerConnection.scanFile(context, arrayOf(downloadsDir.absolutePath), null, null)
         }
     }
@@ -665,6 +814,23 @@ class MainRepository(private val context: Context) {
         file.writeText(logs)
         MediaScannerConnection.scanFile(context, arrayOf(file.absolutePath), null, null)
         fileName
+    }
+
+    suspend fun clearCache(): Long = withContext(Dispatchers.IO) {
+        val size = getFolderSize(tempInstallRoot)
+        if (tempInstallRoot.exists()) {
+            tempInstallRoot.deleteRecursively()
+            tempInstallRoot.mkdirs()
+        }
+        size
+    }
+
+    private fun getFolderSize(file: File): Long {
+        if (!file.exists()) return 0L
+        if (file.isFile) return file.length()
+        var size = 0L
+        file.listFiles()?.forEach { size += getFolderSize(it) }
+        return size
     }
 
     private suspend fun copyFileWithScanner(source: File, target: File) = withContext(Dispatchers.IO) {
@@ -681,23 +847,53 @@ class MainRepository(private val context: Context) {
         }
     }
 
-    private fun moveObbFiles(obbs: Array<File>, packageName: String) {
+    private fun moveObbFiles(packageFolder: File?, looseObbs: List<File>, packageName: String) {
         val obbBaseDir = File(Environment.getExternalStorageDirectory(), "Android/obb/$packageName")
-        if (!obbBaseDir.exists()) obbBaseDir.mkdirs()
+        try {
+            if (!obbBaseDir.exists() && !obbBaseDir.mkdirs()) {
+                Log.e(TAG, "Could not create OBB directory: ${obbBaseDir.absolutePath}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Permission error creating OBB dir", e)
+        }
         
-        for (obb in obbs) {
-            val destFile = File(obbBaseDir, obb.name)
+        packageFolder?.walkTopDown()?.forEach { source ->
+            if (source.isFile && !source.name.endsWith(".apk", true)) {
+                val relPath = source.relativeTo(packageFolder).path
+                val destFile = File(obbBaseDir, relPath)
+                val isFromDownloads = source.absolutePath.contains(downloadsDir.absolutePath)
+                try {
+                    destFile.parentFile?.mkdirs()
+                    if (isFromDownloads || !source.renameTo(destFile)) {
+                        source.inputStream().use { input ->
+                            destFile.outputStream().use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        if (!isFromDownloads) source.delete()
+                    }
+                    MediaScannerConnection.scanFile(context, arrayOf(destFile.absolutePath), null, null)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to move OBB from folder: ${source.name}", e)
+                }
+            }
+        }
+        
+        looseObbs.forEach { loose ->
+            val destFile = File(obbBaseDir, loose.name)
+            val isFromDownloads = loose.absolutePath.contains(downloadsDir.absolutePath)
             try {
-                if (!obb.renameTo(destFile)) {
-                    FileInputStream(obb).use { input ->
-                        FileOutputStream(destFile).use { output ->
+                if (isFromDownloads || !loose.renameTo(destFile)) {
+                    loose.inputStream().use { input ->
+                        destFile.outputStream().use { output ->
                             input.copyTo(output)
                         }
                     }
-                    obb.delete()
+                    if (!isFromDownloads) loose.delete()
                 }
+                MediaScannerConnection.scanFile(context, arrayOf(destFile.absolutePath), null, null)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to move OBB: ${obb.name}", e)
+                Log.e(TAG, "Failed to move loose OBB: ${loose.name}", e)
             }
         }
     }

@@ -360,6 +360,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     refreshInstalledPackages()
                     refreshDownloadedReleases()
                     startMetadataFetchLoop()
+                    repository.verifyAndCleanupInstalls()
                 }
             } finally {
                 _isUpdateCheckInProgress.value = false
@@ -525,6 +526,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 priorityUpdateChannel.trySend(Unit)
                 refreshInstalledPackages() 
                 refreshDownloadedReleases()
+                viewModelScope.launch {
+                    repository.verifyAndCleanupInstalls()
+                }
             }
         }
     }
@@ -992,6 +996,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _events.emit(MainEvent.ShowMessage("Download deleted"))
             } catch (e: Exception) {
                 _events.emit(MainEvent.ShowMessage("Failed to delete download: ${e.message}"))
+            }
+        }
+    }
+
+    fun clearCache() {
+        viewModelScope.launch {
+            try {
+                val freed = repository.clearCache()
+                _events.emit(MainEvent.ShowMessage("Cache cleared, freed ${formatSize(freed)}"))
+            } catch (e: Exception) {
+                _events.emit(MainEvent.ShowMessage("Failed to clear cache: ${e.message}"))
             }
         }
     }
