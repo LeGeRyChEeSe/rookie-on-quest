@@ -168,6 +168,17 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         }
                     }
                 }
+                is MainEvent.RequestIgnoreBatteryOptimizations -> {
+                    try {
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        }
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        context.startActivity(intent)
+                    }
+                }
                 is MainEvent.ShowUpdatePopup -> {
                     showUpdateDialogState = event.release
                 }
@@ -441,61 +452,72 @@ fun SetupLayout(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(32.dp)
-                .then(if (isScrollable) Modifier.verticalScroll(rememberScrollState()) else Modifier),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = iconColor,
-                modifier = Modifier.size(80.dp)
-            )
-            
-            Spacer(modifier = Modifier.height(32.dp))
-            
-            Text(
-                text = title,
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Black,
-                color = Color.White,
-                textAlign = TextAlign.Center
-            )
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodyLarge,
-                color = Color.LightGray,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(0.9f)
-            )
-            
-            Spacer(modifier = Modifier.height(48.dp))
-            
-            content()
-            
-            Spacer(modifier = Modifier.height(48.dp))
-            
-            Button(
-                onClick = onPrimaryClick,
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth(0.8f)
-                    .height(64.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = iconColor)
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .then(if (isScrollable) Modifier.verticalScroll(rememberScrollState()) else Modifier),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = if (isScrollable) Arrangement.Top else Arrangement.Center
             ) {
-                Text(primaryButtonText, fontWeight = FontWeight.Black, fontSize = 18.sp, color = if (iconColor == Color.White) Color.Black else Color.White)
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = iconColor,
+                    modifier = Modifier.size(80.dp)
+                )
+                
+                Spacer(modifier = Modifier.height(32.dp))
+                
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Black,
+                    color = Color.White,
+                    textAlign = TextAlign.Center
+                )
+                
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color.LightGray,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(0.9f)
+                )
+                
+                Spacer(modifier = Modifier.height(48.dp))
+                
+                content()
             }
             
-            if (secondaryButtonText != null && onSecondaryClick != null) {
-                Spacer(modifier = Modifier.height(16.dp))
-                TextButton(
-                    onClick = onSecondaryClick,
-                    modifier = Modifier.fillMaxWidth(0.8f)
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Button(
+                    onClick = onPrimaryClick,
+                    modifier = Modifier
+                        .fillMaxWidth(0.8f)
+                        .height(64.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = iconColor)
                 ) {
-                    Text(secondaryButtonText, color = Color.Gray, fontWeight = FontWeight.Bold)
+                    Text(primaryButtonText, fontWeight = FontWeight.Black, fontSize = 18.sp, color = if (iconColor == Color.White) Color.Black else Color.White)
+                }
+                
+                if (secondaryButtonText != null && onSecondaryClick != null) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    TextButton(
+                        onClick = onSecondaryClick,
+                        modifier = Modifier.fillMaxWidth(0.8f)
+                    ) {
+                        Text(secondaryButtonText, color = Color.Gray, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -527,6 +549,11 @@ fun PermissionOverlay(
                         "File Access",
                         "Required to copy OBB and game files to storage.",
                         Icons.Default.Storage
+                    )
+                    RequiredPermission.IGNORE_BATTERY_OPTIMIZATIONS -> Triple(
+                        "Battery Optimization",
+                        "Prevents the system from killing Rookie during long downloads.",
+                        Icons.Default.BatteryChargingFull
                     )
                 }
                 
@@ -572,7 +599,9 @@ fun UpdateOverlay(
         iconColor = Color(0xFF3498db),
         primaryButtonText = "UPDATE NOW",
         onPrimaryClick = onConfirm,
-        isScrollable = false
+        secondaryButtonText = "LATER",
+        onSecondaryClick = onDismiss,
+        isScrollable = true
     ) {
         Surface(
             color = Color.White.copy(alpha = 0.05f),
@@ -591,13 +620,11 @@ fun UpdateOverlay(
                     )
                 }
                 Spacer(modifier = Modifier.height(16.dp))
-                Box(modifier = Modifier.heightIn(max = 250.dp).verticalScroll(rememberScrollState())) {
-                    Text(
-                        text = parseMarkdown(release.body),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.LightGray
-                    )
-                }
+                Text(
+                    text = parseMarkdown(release.body),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray
+                )
             }
         }
     }

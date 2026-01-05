@@ -34,7 +34,6 @@ keystore.properties
 *.iml
 *.iws
 *.ipr
-*.xml
 
 # OS specific
 .DS_Store

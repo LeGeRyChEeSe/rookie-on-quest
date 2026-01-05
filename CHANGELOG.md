@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-01-05
+
+### ✨ New Features
+- **Special Install Support:** Added support for games with custom installation scripts (e.g., ports like Quake3Quest) via `install.txt` parsing to handle complex data placement.
+- **Battery Optimization:** Integrated a check to request ignoring battery optimizations, preventing the system from killing the app during long downloads.
+
+### 🚀 Improvements
+- **Smarter Space Check:** Improved pre-flight storage validation with better estimation for 7z archives (accounting for extraction overhead) and correct external storage path checking.
+- **Setup UI:** Enhanced the permission setup screen with better scrolling and clarity for a smoother onboarding experience.
+- **Error Handling:** Better reporting for storage errors during installation to alert users immediately.
+
 ## [2.3.0] - 2026-01-01
 
 ### ✨ New Features

@@ -23,6 +23,8 @@ This document outlines the strategic priorities for the project, categorized by 
 | **Auto-Update System**         | GitHub API integration for in-app updates and changelogs. (#10)                         |
 | **Diagnostic Export**         | Added one-tap log collection and clipboard export in settings for troubleshooting.      |
 | **Cache Management**           | Added settings option to clear temporary download cache and auto-cleanup logic.         |
+| **Custom Install Script**      | Added support for `install.txt` parsing to handle complex data placement (e.g. Quake3). |
+| **Battery Optimization**       | Added permission flow to ignore battery optimizations for reliable background downloads.  |
 
 ---
 

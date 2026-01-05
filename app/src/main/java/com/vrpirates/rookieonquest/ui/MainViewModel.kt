@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
+import android.os.PowerManager
 import android.util.Log
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
@@ -36,6 +37,7 @@ sealed class MainEvent {
     data class InstallApk(val apkFile: File) : MainEvent()
     object RequestInstallPermission : MainEvent()
     object RequestStoragePermission : MainEvent()
+    object RequestIgnoreBatteryOptimizations : MainEvent()
     data class ShowUpdatePopup(val release: GitHubRelease) : MainEvent()
     data class ShowMessage(val message: String) : MainEvent()
     data class CopyLogs(val logs: String) : MainEvent()
@@ -43,7 +45,8 @@ sealed class MainEvent {
 
 enum class RequiredPermission {
     INSTALL_UNKNOWN_APPS,
-    MANAGE_EXTERNAL_STORAGE
+    MANAGE_EXTERNAL_STORAGE,
+    IGNORE_BATTERY_OPTIMIZATIONS
 }
 
 enum class FilterStatus {
@@ -674,6 +677,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     missing.add(RequiredPermission.MANAGE_EXTERNAL_STORAGE)
                 }
             }
+            
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
+                missing.add(RequiredPermission.IGNORE_BATTERY_OPTIMIZATIONS)
+            }
+            
         } catch (e: Exception) {
             Log.e(TAG, "Error checking permissions", e)
         }
@@ -701,6 +710,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             when (next) {
                 RequiredPermission.INSTALL_UNKNOWN_APPS -> _events.emit(MainEvent.RequestInstallPermission)
                 RequiredPermission.MANAGE_EXTERNAL_STORAGE -> _events.emit(MainEvent.RequestStoragePermission)
+                RequiredPermission.IGNORE_BATTERY_OPTIMIZATIONS -> _events.emit(MainEvent.RequestIgnoreBatteryOptimizations)
             }
         }
     }
@@ -854,9 +864,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 Log.d(TAG, "Task cancelled/paused: ${task.gameName}")
                 // Do not remove from queue, status is already set to PAUSED by pauseInstall()
             } else {
+                val errorMessage = e.message ?: "Unknown error"
                 Log.e(TAG, "Installation failed for ${task.gameName}", e)
-                updateTaskStatus(task.releaseName, InstallTaskStatus.FAILED, e.message)
-                _events.emit(MainEvent.ShowMessage("Failed to install ${task.gameName}: ${e.message}"))
+                
+                // Ensure the status is updated to FAILED so the UI shows it
+                updateTaskStatus(task.releaseName, InstallTaskStatus.FAILED, errorMessage)
+                
+                // Specific handling for storage space to pause other tasks if needed or show prominent popup
+                if (errorMessage.contains("Insufficient storage space", ignoreCase = true)) {
+                    _events.emit(MainEvent.ShowMessage("STORAGE ERROR: $errorMessage"))
+                } else {
+                    _events.emit(MainEvent.ShowMessage("Failed to install ${task.gameName}: $errorMessage"))
+                }
             }
         } finally {
             // Only clear shared state if it still belongs to this task (prevents race conditions with promoted tasks)
@@ -885,7 +904,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         progress = progress, 
                         currentSize = if (total > 0) formatSize(current) else null,
                         totalSize = if (total > 0) formatSize(total) else null,
-                        totalBytes = total
+                        totalBytes = total,
+                        error = null // Clear error if we are progressing
                     )
                 } else it 
             }

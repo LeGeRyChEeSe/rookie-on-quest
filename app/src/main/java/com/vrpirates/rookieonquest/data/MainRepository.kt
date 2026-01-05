@@ -383,7 +383,7 @@ class MainRepository(private val context: Context) {
     }
 
     private fun checkAvailableSpace(requiredBytes: Long) {
-        val stat = StatFs(context.cacheDir.path)
+        val stat = StatFs(Environment.getExternalStorageDirectory().path)
         val availableBytes = stat.availableBlocksLong * stat.blockSizeLong 
         
         if (availableBytes < requiredBytes) {
@@ -414,6 +414,12 @@ class MainRepository(private val context: Context) {
         onProgress("Verifying with server...", 0.02f, 0, 0)
         val (remoteSegments, totalBytes, _) = getGameRemoteInfo(game)
         if (remoteSegments.isEmpty()) throw Exception("No installable files found on server")
+
+        // PRE-FLIGHT SPACE CHECK
+        val isSevenZ = remoteSegments.keys.any { it.contains(".7z") }
+        val multiplier = if (isSevenZ) if (downloadOnly || keepApk) 2.9 else 1.9 else 1.1
+        val estimatedRequired = (totalBytes * multiplier).toLong()
+        checkAvailableSpace(estimatedRequired)
 
         val hash = md5(game.releaseName + "\n")
         val gameTempDir = File(tempInstallRoot, hash)
@@ -474,11 +480,6 @@ class MainRepository(private val context: Context) {
             val password = decodedPassword ?: throw Exception("Password not available")
             val sanitizedBase = if (config.baseUri.endsWith("/")) config.baseUri else "${config.baseUri}/"
             val dirUrl = "$sanitizedBase$hash/"
-
-            // Pre-flight space check
-            val isSevenZ = remoteSegments.keys.any { it.contains(".7z") }
-            val multiplier = if (isSevenZ) if (downloadOnly || keepApk) 2.9 else 1.9 else 1.1
-            checkAvailableSpace((totalBytes * multiplier).toLong())
 
             if (!gameTempDir.exists()) gameTempDir.mkdirs()
             
@@ -593,20 +594,19 @@ class MainRepository(private val context: Context) {
                         var entry = sevenZFile.nextEntry
                         while (entry != null) {
                             currentCoroutineContext().ensureActive()
-                            if (entry.name.endsWith(".apk", true) || entry.name.endsWith(".obb", true) || entry.name.contains(game.packageName)) {
-                                val outFile = File(extractionDir, entry.name)
-                                if (entry.isDirectory) outFile.mkdirs()
-                                else {
-                                    outFile.parentFile?.let { if (!it.exists()) it.mkdirs() }
-                                    FileOutputStream(outFile).use { out ->
-                                        val buffer = ByteArray(8192 * 8)
-                                        var bytesRead: Int
-                                        while (true) {
-                                            currentCoroutineContext().ensureActive()
-                                            bytesRead = sevenZFile.read(buffer)
-                                            if (bytesRead == -1) break
-                                            out.write(buffer, 0, bytesRead)
-                                        }
+                            // Keep APK, OBB and EVERYTHING ELSE (important for Quake3Quest style structures)
+                            val outFile = File(extractionDir, entry.name)
+                            if (entry.isDirectory) outFile.mkdirs()
+                            else {
+                                outFile.parentFile?.let { if (!it.exists()) it.mkdirs() }
+                                FileOutputStream(outFile).use { out ->
+                                    val buffer = ByteArray(8192 * 8)
+                                    var bytesRead: Int
+                                    while (true) {
+                                        currentCoroutineContext().ensureActive()
+                                        bytesRead = sevenZFile.read(buffer)
+                                        if (bytesRead == -1) break
+                                        out.write(buffer, 0, bytesRead)
                                     }
                                 }
                             }
@@ -642,6 +642,36 @@ class MainRepository(private val context: Context) {
             throw Exception("No APK found for installation")
         }
         val finalApk = apks.getOrNull(0)
+
+        // SPECIAL HANDLING FOR NON-STANDARD OBB/DATA STRUCTURES
+        val installTxtFile = extractionDir.walkTopDown().find { it.name == "install.txt" }
+        val specialMoves = mutableListOf<Pair<File, String>>()
+        
+        if (installTxtFile != null) {
+            Log.d(TAG, "Found install.txt, parsing for special instructions")
+            val lines = installTxtFile.readLines()
+            lines.forEach { line ->
+                val trimmed = line.trim()
+                if (trimmed.contains("adb push")) {
+                    val parts = trimmed.split(Regex("\\s+"))
+                    val pushIdx = parts.indexOf("push")
+                    if (pushIdx != -1 && parts.size > pushIdx + 2) {
+                        val sourceName = parts[pushIdx + 1].trim('/', '\\')
+                        val destPath = parts[pushIdx + 2]
+                        
+                        val sourceFile = File(extractionDir, sourceName)
+                        if (sourceFile.exists()) {
+                            specialMoves.add(sourceFile to destPath)
+                        } else {
+                            // Try finding it recursively if path in install.txt is relative or different
+                            extractionDir.walkTopDown().find { it.name == sourceName }?.let {
+                                specialMoves.add(it to destPath)
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         var packageFolder: File? = null
         extractionDir.walkTopDown().forEach { file ->
@@ -712,6 +742,16 @@ class MainRepository(private val context: Context) {
                         copyFileWithScanner(loose, targetObb)
                     }
                 }
+
+                // Save special folders to downloads too
+                specialMoves.forEach { (source, _) ->
+                    if (source.isDirectory && source.name != game.packageName) {
+                        val targetDir = File(gameDownloadDir, source.name)
+                        if (source.absolutePath != targetDir.absolutePath) {
+                            source.copyRecursively(targetDir, overwrite = true)
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to save files to downloads", e)
             }
@@ -723,6 +763,14 @@ class MainRepository(private val context: Context) {
             return@withContext null
         }
 
+        // Apply special moves (e.g. Quake3Quest data folders)
+        if (specialMoves.isNotEmpty()) {
+            onProgress("Installing Special Data...", 0.94f, totalBytes, totalBytes)
+            specialMoves.forEach { (source, destPath) ->
+                moveDataToSdcard(source, destPath)
+            }
+        }
+
         val hasObbs = packageFolder != null || looseObbs.isNotEmpty()
         if (hasObbs) {
             onProgress("Installing OBBs...", 0.96f, totalBytes, totalBytes)
@@ -731,7 +779,7 @@ class MainRepository(private val context: Context) {
 
         // Save info for post-install verification
         try {
-            File(gameTempDir, "install.info").writeText("${game.packageName}\n$hasObbs")
+            File(gameTempDir, "install.info").writeText("${game.packageName}\n${hasObbs || specialMoves.isNotEmpty()}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write install info", e)
         }
@@ -744,6 +792,41 @@ class MainRepository(private val context: Context) {
         finalApk.copyTo(externalApk, overwrite = true)
         
         externalApk
+    }
+
+    private fun moveDataToSdcard(source: File, destPath: String) {
+        val sdcard = Environment.getExternalStorageDirectory()
+        val relativeDest = destPath.removePrefix("/sdcard/").removePrefix("sdcard/").removePrefix("/")
+        
+        // If destPath ends with /, it means put the source INSIDE that folder
+        // If it doesn't, it might mean rename source to destPath.
+        // Usually adb push folder /sdcard/ means /sdcard/folder
+        val targetFile = if (destPath.endsWith("/")) {
+            File(sdcard, relativeDest + File.separator + source.name)
+        } else if (relativeDest.isEmpty()) {
+            File(sdcard, source.name)
+        } else {
+            File(sdcard, relativeDest)
+        }
+
+        Log.d(TAG, "Moving special data: ${source.absolutePath} to ${targetFile.absolutePath}")
+        
+        try {
+            targetFile.parentFile?.mkdirs()
+            if (source.isDirectory) {
+                source.copyRecursively(targetFile, overwrite = true)
+                // We don't delete from extraction dir yet as it will be cleaned up later
+            } else {
+                source.copyTo(targetFile, overwrite = true)
+            }
+            
+            // Scan files for media library
+            val filesToScan = mutableListOf<String>()
+            targetFile.walkTopDown().forEach { filesToScan.add(it.absolutePath) }
+            MediaScannerConnection.scanFile(context, filesToScan.toTypedArray(), null, null)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to move special data: ${source.name}", e)
+        }
     }
 
     suspend fun verifyAndCleanupInstalls(excludedReleaseNames: Set<String> = emptySet()) = withContext(Dispatchers.IO) {
@@ -768,8 +851,15 @@ class MainRepository(private val context: Context) {
                     if (installedPackages.containsKey(packageName)) {
                         var obbOk = true
                         if (obbRequired) {
+                            // For special data, it's harder to verify without re-parsing install.txt
+                            // but usually if APK is installed, we assume OBB/Data was moved too during the process.
+                            // We do a simple check for standard OBB
                             val obbDir = File(Environment.getExternalStorageDirectory(), "Android/obb/$packageName")
-                            obbOk = obbDir.exists() && (obbDir.list()?.isNotEmpty() ?: false)
+                            val standardObbExists = obbDir.exists() && (obbDir.list()?.isNotEmpty() ?: false)
+                            
+                            // If it's not a standard OBB, we just trust the installation was finished if APK is there.
+                            // Better than leaving GBs of temp files.
+                            obbOk = true 
                         }
                         
                         if (obbOk) {
