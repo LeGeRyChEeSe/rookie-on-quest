@@ -23,6 +23,9 @@ interface GameDao {
     @Query("UPDATE games SET description = :description, screenshotUrlsJson = :screenshots WHERE releaseName = :releaseName")
     suspend fun updateMetadata(releaseName: String, description: String?, screenshots: String?)
 
+    @Query("UPDATE games SET isFavorite = :isFavorite WHERE releaseName = :releaseName")
+    suspend fun updateFavorite(releaseName: String, isFavorite: Boolean)
+
     @Query("DELETE FROM games")
     suspend fun clearAll()
     

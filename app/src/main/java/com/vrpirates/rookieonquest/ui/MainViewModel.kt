@@ -51,6 +51,7 @@ enum class RequiredPermission {
 
 enum class FilterStatus {
     ALL,
+    FAVORITES,
     INSTALLED,
     DOWNLOADED,
     UPDATE_AVAILABLE
@@ -109,6 +110,7 @@ data class GameItemState(
     val queueStatus: InstallTaskStatus? = null,
     val isFirstInQueue: Boolean = false,
     val isDownloaded: Boolean = false,
+    val isFavorite: Boolean = false,
     val size: String? = null,
     val description: String? = null,
     val screenshotUrls: List<String>? = null
@@ -205,6 +207,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val counts = mutableMapOf<FilterStatus, Int>()
         counts[FilterStatus.ALL] = list.size
         
+        var favoriteCount = 0
         var installedCount = 0
         var updateCount = 0
         var downloadedCount = 0
@@ -212,6 +215,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         list.forEach { game ->
             val installedVersion = installed[game.packageName]
             val catalogVersion = game.versionCode.toLongOrNull() ?: 0L
+            
+            if (game.isFavorite) {
+                favoriteCount++
+            }
             
             if (installedVersion != null) {
                 installedCount++
@@ -225,6 +232,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         
+        counts[FilterStatus.FAVORITES] = favoriteCount
         counts[FilterStatus.INSTALLED] = installedCount
         counts[FilterStatus.DOWNLOADED] = downloadedCount
         counts[FilterStatus.UPDATE_AVAILABLE] = updateCount
@@ -272,6 +280,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val queueTask = queue.find { it.releaseName == game.releaseName }
 
             when (filter) {
+                FilterStatus.FAVORITES -> if (!game.isFavorite) return@mapNotNull null
                 FilterStatus.INSTALLED -> if (status == InstallStatus.NOT_INSTALLED) return@mapNotNull null
                 FilterStatus.DOWNLOADED -> if (!isDownloaded) return@mapNotNull null
                 FilterStatus.UPDATE_AVAILABLE -> if (status != InstallStatus.UPDATE_AVAILABLE) return@mapNotNull null
@@ -299,6 +308,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 queueStatus = queueTask?.status,
                 isFirstInQueue = game.releaseName == firstInQueue,
                 isDownloaded = isDownloaded,
+                isFavorite = game.isFavorite,
                 size = if (game.sizeBytes != null && game.sizeBytes > 0) formatSize(game.sizeBytes) else if (game.sizeBytes == -1L) "Error" else null,
                 description = game.description,
                 screenshotUrls = game.screenshotUrls
@@ -378,6 +388,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     refreshInstalledPackages()
                 }
             }
+        }
+    }
+
+    fun toggleFavorite(releaseName: String, isFavorite: Boolean) {
+        viewModelScope.launch {
+            repository.toggleFavorite(releaseName, isFavorite)
         }
     }
 

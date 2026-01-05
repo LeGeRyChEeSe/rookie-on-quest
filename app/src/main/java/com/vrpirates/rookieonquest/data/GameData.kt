@@ -7,5 +7,6 @@ data class GameData(
     val releaseName: String,
     val sizeBytes: Long? = null,
     val description: String? = null,
-    val screenshotUrls: List<String>? = null
+    val screenshotUrls: List<String>? = null,
+    val isFavorite: Boolean = false
 )

@@ -78,6 +78,10 @@ class MainRepository(private val context: Context) {
         entities.map { it.toData() }
     }
 
+    suspend fun toggleFavorite(releaseName: String, isFavorite: Boolean) = withContext(Dispatchers.IO) {
+        gameDao.updateFavorite(releaseName, isFavorite)
+    }
+
     suspend fun fetchConfig(): PublicConfig = withContext(Dispatchers.IO) {
         try {
             val config = service.getPublicConfig()
@@ -132,7 +136,7 @@ class MainRepository(private val context: Context) {
                     val newList = CatalogParser.parse(gameListContent)
                     
                     val existingData = gameDao.getAllGamesList().associate { 
-                        it.releaseName to Triple(it.sizeBytes, it.description, it.screenshotUrlsJson) 
+                        it.releaseName to Triple(it.sizeBytes, it.description, it.isFavorite) 
                     }
                     
                     val entities = newList.map { game ->
@@ -145,7 +149,7 @@ class MainRepository(private val context: Context) {
                         game.copy(
                             sizeBytes = existing?.first,
                             description = description,
-                            screenshotUrls = existing?.third?.split("|")?.filter { it.isNotEmpty() }
+                            isFavorite = existing?.third ?: false
                         ).toEntity()
                     }
                     

@@ -13,7 +13,8 @@ data class GameEntity(
     val sizeBytes: Long? = null,
     val description: String? = null,
     val screenshotUrlsJson: String? = null,
-    val lastUpdated: Long = System.currentTimeMillis()
+    val lastUpdated: Long = System.currentTimeMillis(),
+    val isFavorite: Boolean = false
 )
 
 fun GameEntity.toData() = GameData(
@@ -23,7 +24,8 @@ fun GameEntity.toData() = GameData(
     releaseName = releaseName,
     sizeBytes = sizeBytes,
     description = description,
-    screenshotUrls = screenshotUrlsJson?.split("|")?.filter { it.isNotEmpty() }
+    screenshotUrls = screenshotUrlsJson?.split("|")?.filter { it.isNotEmpty() },
+    isFavorite = isFavorite
 )
 
 fun GameData.toEntity() = GameEntity(
@@ -33,5 +35,6 @@ fun GameData.toEntity() = GameEntity(
     versionCode = versionCode,
     sizeBytes = sizeBytes,
     description = description,
-    screenshotUrlsJson = screenshotUrls?.joinToString("|")
+    screenshotUrlsJson = screenshotUrls?.joinToString("|"),
+    isFavorite = isFavorite
 )

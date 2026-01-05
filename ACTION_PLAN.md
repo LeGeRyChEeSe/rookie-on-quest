@@ -25,6 +25,7 @@ This document outlines the strategic priorities for the project, categorized by 
 | **Cache Management**           | Added settings option to clear temporary download cache and auto-cleanup logic.         |
 | **Custom Install Script**      | Added support for `install.txt` parsing to handle complex data placement (e.g. Quake3). |
 | **Battery Optimization**       | Added permission flow to ignore battery optimizations for reliable background downloads.  |
+| **Favorites System**           | Implemented local favorites with persistent database storage and UI filtering.          |
 
 ---
 

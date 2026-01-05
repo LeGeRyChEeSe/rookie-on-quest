@@ -328,6 +328,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                             onDownloadOnlyClick = { viewModel.installGame(game.releaseName, downloadOnly = true) },
                                             onDeleteDownloadClick = { gameToDelete = game },
                                             onResumeClick = { viewModel.resumeInstall(game.releaseName) },
+                                            onToggleFavorite = { viewModel.toggleFavorite(game.releaseName, it) },
                                             isGridItem = true
                                         )
                                     }
@@ -345,7 +346,8 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                             onUninstallClick = { viewModel.uninstallGame(game.packageName) },
                                             onDownloadOnlyClick = { viewModel.installGame(game.releaseName, downloadOnly = true) },
                                             onDeleteDownloadClick = { gameToDelete = game },
-                                            onResumeClick = { viewModel.resumeInstall(game.releaseName) }
+                                            onResumeClick = { viewModel.resumeInstall(game.releaseName) },
+                                            onToggleFavorite = { viewModel.toggleFavorite(game.releaseName, it) }
                                         )
                                     }
                                 }
@@ -725,6 +727,28 @@ fun CustomTopBar(
                             containerColor = Color.White.copy(alpha = 0.05f)
                         ),
                         border = null
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = selectedFilter == FilterStatus.FAVORITES,
+                        onClick = { onFilterChange(FilterStatus.FAVORITES) },
+                        label = { Text("Favorites (${filterCounts[FilterStatus.FAVORITES] ?: 0})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFFf1c40f),
+                            selectedLabelColor = Color.Black,
+                            labelColor = Color.Gray,
+                            containerColor = Color.White.copy(alpha = 0.05f)
+                        ),
+                        border = null,
+                        leadingIcon = {
+                             Icon(
+                                Icons.Default.Star,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (selectedFilter == FilterStatus.FAVORITES) Color.Black else Color(0xFFf1c40f)
+                            )
+                        }
                     )
                 }
                 item {

@@ -15,10 +15,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -49,6 +46,7 @@ fun GameListItem(
     onDownloadOnlyClick: () -> Unit,
     onDeleteDownloadClick: () -> Unit = {},
     onResumeClick: () -> Unit = {},
+    onToggleFavorite: (Boolean) -> Unit = {},
     isGridItem: Boolean = false
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -101,7 +99,7 @@ fun GameListItem(
         colors = CardDefaults.cardColors(
             containerColor = if (isHovered) Color(0xFF1E1E1E) else Color(0xFF121212)
         ),
-        border = if (isHovered) BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)) else null
+        border = if (isHovered) BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)) else if (game.isFavorite) BorderStroke(1.dp, Color(0xFFf1c40f).copy(alpha = 0.5f)) else null
     ) {
         Column {
             Row(
@@ -115,7 +113,7 @@ fun GameListItem(
                         .size(if (isGridItem) 56.dp else 60.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(Color.Black)
-                        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(10.dp)),
+                        .border(1.dp, if (game.isFavorite) Color(0xFFf1c40f).copy(alpha = 0.6f) else Color.White.copy(alpha = 0.1f), RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     AsyncImage(
@@ -138,16 +136,31 @@ fun GameListItem(
                         .weight(1f)
                         .padding(start = 12.dp, end = 8.dp)
                 ) {
-                    Text(
-                        text = game.name, 
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        ),
-                        color = Color.White,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = game.name, 
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            ),
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        
+                        IconButton(
+                            onClick = { onToggleFavorite(!game.isFavorite) },
+                            modifier = Modifier.size(24.dp).padding(start = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (game.isFavorite) Icons.Default.Star else Icons.Default.StarBorder,
+                                contentDescription = "Favorite",
+                                tint = if (game.isFavorite) Color(0xFFf1c40f) else Color.Gray.copy(alpha = 0.5f),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                     
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
