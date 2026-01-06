@@ -13,7 +13,7 @@ import com.vrpirates.rookieonquest.network.PublicConfig
 import com.vrpirates.rookieonquest.network.VrpService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -135,21 +135,22 @@ class MainRepository(private val context: Context) {
                     }
                     val newList = CatalogParser.parse(gameListContent)
                     
-                    val existingData = gameDao.getAllGamesList().associate { 
-                        it.releaseName to Triple(it.sizeBytes, it.description, it.isFavorite) 
-                    }
+                    val existingData = gameDao.getAllGamesList().associateBy { it.releaseName }
                     
                     val entities = newList.map { game ->
                         val existing = existingData[game.releaseName]
+                        val isNewOrUpdated = existing == null || existing.versionCode != game.versionCode
                         
                         // Local description check
                         val localNote = File(notesDir, "${game.releaseName}.txt")
-                        val description = if (localNote.exists()) localNote.readText() else existing?.second
+                        val description = if (localNote.exists()) localNote.readText() else existing?.description ?: game.description
                         
                         game.copy(
-                            sizeBytes = existing?.first,
+                            sizeBytes = game.sizeBytes ?: existing?.sizeBytes,
                             description = description,
-                            isFavorite = existing?.third ?: false
+                            isFavorite = existing?.isFavorite ?: false,
+                            lastUpdated = if (isNewOrUpdated) System.currentTimeMillis() else (existing?.lastUpdated ?: System.currentTimeMillis()),
+                            popularity = game.popularity
                         ).toEntity()
                     }
                     

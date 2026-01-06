@@ -17,19 +17,28 @@ object CatalogParser {
             if (line.isBlank()) continue
             
             val parts = line.split(";")
-            // According to Unity source:
-            // parts[0] = GameName
-            // parts[1] = ReleaseName
-            // parts[2] = PackageName
-            // parts[3] = VersionCode
+            // Standard VRP Catalog format:
+            // 0: Game Name
+            // 1: Release Name
+            // 2: Package Name
+            // 3: Version Code
+            // Optional/Extended fields:
+            // 4: Size (Long)
+            // 5: Popularity (Int)
+            
             if (parts.size >= 4) {
                 val releaseName = parts[1].trim()
                 if (!games.containsKey(releaseName)) {
+                    val sizeBytes = parts.getOrNull(4)?.trim()?.toLongOrNull()
+                    val popularity = parts.getOrNull(5)?.trim()?.toIntOrNull() ?: 0
+                    
                     games[releaseName] = GameData(
                         gameName = parts[0].trim(),
                         releaseName = releaseName,
                         packageName = parts[2].trim(),
-                        versionCode = parts[3].trim()
+                        versionCode = parts[3].trim(),
+                        sizeBytes = sizeBytes,
+                        popularity = popularity
                     )
                 }
             }

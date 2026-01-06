@@ -91,6 +91,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val error by viewModel.error.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val selectedFilter by viewModel.selectedFilter.collectAsState()
+    val sortMode by viewModel.sortMode.collectAsState()
     val filterCounts by viewModel.filterCounts.collectAsState()
     val missingPermissions by viewModel.missingPermissions.collectAsState()
     val alphabetInfo by viewModel.alphabetInfo.collectAsState()
@@ -264,6 +265,8 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                             onSearchQueryChange = { viewModel.setSearchQuery(it) },
                             selectedFilter = selectedFilter,
                             onFilterChange = { viewModel.setFilter(it) },
+                            sortMode = sortMode,
+                            onSortChange = { viewModel.setSortMode(it) },
                             filterCounts = filterCounts,
                             onSettingsClick = { showSettingsDialog = true },
                             onRefreshClick = { viewModel.refreshData() },
@@ -288,7 +291,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 ) { innerPadding ->
                     Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
                         Row(modifier = Modifier.fillMaxSize()) {
-                            if (games.isNotEmpty() && searchQuery.isEmpty() && selectedFilter == FilterStatus.ALL) {
+                            if (games.isNotEmpty() && searchQuery.isEmpty() && selectedFilter == FilterStatus.ALL && sortMode == SortMode.NAME_ASC) {
                                 AlphabetIndexer(
                                     alphabetInfo = alphabetInfo,
                                     onLetterClick = { index ->
@@ -639,6 +642,8 @@ fun CustomTopBar(
     onSearchQueryChange: (String) -> Unit,
     selectedFilter: FilterStatus,
     onFilterChange: (FilterStatus) -> Unit,
+    sortMode: SortMode,
+    onSortChange: (SortMode) -> Unit,
     filterCounts: Map<FilterStatus, Int>,
     onSettingsClick: () -> Unit,
     onRefreshClick: () -> Unit,
@@ -646,6 +651,8 @@ fun CustomTopBar(
     isInstalling: Boolean,
     permissionsMissing: Boolean
 ) {
+    var showSortMenu by remember { mutableStateOf(false) }
+
     Surface(
         color = Color(0xFF121212),
         tonalElevation = 4.dp,
@@ -668,6 +675,37 @@ fun CustomTopBar(
                 )
                 
                 Spacer(modifier = Modifier.weight(1f))
+
+                Box {
+                    IconButton(onClick = { showSortMenu = true }) {
+                        Icon(Icons.Default.Sort, contentDescription = "Sort", tint = Color.White)
+                    }
+                    DropdownMenu(
+                        expanded = showSortMenu,
+                        onDismissRequest = { showSortMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Name (A-Z)", color = Color.White) },
+                            onClick = { onSortChange(SortMode.NAME_ASC); showSortMenu = false },
+                            leadingIcon = { if (sortMode == SortMode.NAME_ASC) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.secondary) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Last Updated", color = Color.White) },
+                            onClick = { onSortChange(SortMode.LAST_UPDATED); showSortMenu = false },
+                            leadingIcon = { if (sortMode == SortMode.LAST_UPDATED) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.secondary) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Size", color = Color.White) },
+                            onClick = { onSortChange(SortMode.SIZE); showSortMenu = false },
+                            leadingIcon = { if (sortMode == SortMode.SIZE) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.secondary) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Popularity", color = Color.White) },
+                            onClick = { onSortChange(SortMode.POPULARITY); showSortMenu = false },
+                            leadingIcon = { if (sortMode == SortMode.POPULARITY) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.secondary) }
+                        )
+                    }
+                }
                 
                 IconButton(onClick = onRefreshClick, enabled = !isInstalling && !permissionsMissing) {
                     Icon(
@@ -727,6 +765,28 @@ fun CustomTopBar(
                             containerColor = Color.White.copy(alpha = 0.05f)
                         ),
                         border = null
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = selectedFilter == FilterStatus.NEW,
+                        onClick = { onFilterChange(FilterStatus.NEW) },
+                        label = { Text("New (${filterCounts[FilterStatus.NEW] ?: 0})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFFe74c3c),
+                            selectedLabelColor = Color.White,
+                            labelColor = Color.Gray,
+                            containerColor = Color.White.copy(alpha = 0.05f)
+                        ),
+                        border = null,
+                        leadingIcon = {
+                             Icon(
+                                Icons.Default.NewReleases,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (selectedFilter == FilterStatus.NEW) Color.White else Color(0xFFe74c3c)
+                            )
+                        }
                     )
                 }
                 item {

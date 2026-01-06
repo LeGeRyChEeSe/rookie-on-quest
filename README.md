@@ -39,6 +39,9 @@ A huge thank you to the **Rookie developers and the VRPirates community**. Their
 ### Key Features
 - **Standalone Sideloading**: Install games (APK + OBB) directly on your Meta Quest without needing a PC.
 - **Full Catalog Access**: Browse and search through the complete VRPirates library natively.
+- **Favorites System**: Mark your favorite games for quick access.
+- **Advanced Sorting**: Sort by name, size, date, or popularity to find the best games.
+- **Background Downloads**: Optimized to continue downloading even when the device sleeps.
 - **Optimized Performance**: Smooth and fast navigation through 2400+ game entries.
 - **Zero Setup**: Open the app and start browsing immediately with no configuration required.
 

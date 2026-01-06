@@ -37,6 +37,9 @@ import coil.request.ImageRequest
 import coil.request.ImageResult
 import coil.size.Precision
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun GameListItem(
@@ -257,6 +260,24 @@ fun GameListItem(
                     Divider(color = Color.White.copy(alpha = 0.1f), thickness = 0.5.dp)
                     Spacer(modifier = Modifier.height(12.dp))
                     
+                    // Metadata Info
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            InfoItem("Release Name", game.releaseName)
+                            if (game.popularity > 0) {
+                                InfoItem("Popularity", "⭐ ${game.popularity}")
+                            }
+                        }
+                        Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.End) {
+                            InfoItem("Last Updated", formatDate(game.lastUpdated))
+                        }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(12.dp))
+                    
                     if (!game.screenshotUrls.isNullOrEmpty()) {
                         LazyRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -330,4 +351,30 @@ fun GameListItem(
             }
         }
     }
+}
+
+@Composable
+private fun InfoItem(label: String, value: String) {
+    Column(modifier = Modifier.padding(vertical = 2.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.Gray,
+            fontSize = 9.sp
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.White.copy(alpha = 0.8f),
+            fontSize = 11.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+private fun formatDate(timestamp: Long): String {
+    if (timestamp == 0L) return "Unknown"
+    val sdf = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
+    return sdf.format(Date(timestamp))
 }

@@ -54,7 +54,16 @@ enum class FilterStatus {
     FAVORITES,
     INSTALLED,
     DOWNLOADED,
-    UPDATE_AVAILABLE
+    UPDATE_AVAILABLE,
+    NEW
+}
+
+enum class SortMode {
+    NAME_ASC,
+    NAME_DESC,
+    LAST_UPDATED,
+    SIZE,
+    POPULARITY
 }
 
 enum class InstallStatus {
@@ -112,8 +121,11 @@ data class GameItemState(
     val isDownloaded: Boolean = false,
     val isFavorite: Boolean = false,
     val size: String? = null,
+    val sizeBytes: Long = 0L,
     val description: String? = null,
-    val screenshotUrls: List<String>? = null
+    val screenshotUrls: List<String>? = null,
+    val lastUpdated: Long = 0L,
+    val popularity: Int = 0
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -126,6 +138,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _selectedFilter = MutableStateFlow(FilterStatus.ALL)
     val selectedFilter: StateFlow<FilterStatus> = _selectedFilter
+
+    private val _sortMode = MutableStateFlow(SortMode.NAME_ASC)
+    val sortMode: StateFlow<SortMode> = _sortMode
 
     private val _events = MutableSharedFlow<MainEvent>()
     val events = _events.asSharedFlow()
@@ -187,16 +202,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .build()
 
     private val _allGames = repository.getAllGamesFlow()
-        .map { list ->
-            list.sortedWith(compareBy<GameData> {
-                val c = it.gameName.firstOrNull() ?: ' '
-                when {
-                    c == '_' -> 0
-                    c.isDigit() -> 1
-                    else -> 2
-                }
-            }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.gameName })
-        }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val filterCounts: StateFlow<Map<FilterStatus, Int>> = combine(
@@ -211,7 +216,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         var installedCount = 0
         var updateCount = 0
         var downloadedCount = 0
+        var newCount = 0
         
+        val lastSync = prefs.getLong("last_catalog_sync_time", 0L)
+
         list.forEach { game ->
             val installedVersion = installed[game.packageName]
             val catalogVersion = game.versionCode.toLongOrNull() ?: 0L
@@ -230,12 +238,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (downloaded.contains(game.releaseName)) {
                 downloadedCount++
             }
+
+            if (game.lastUpdated > lastSync && lastSync != 0L) {
+                newCount++
+            }
         }
         
         counts[FilterStatus.FAVORITES] = favoriteCount
         counts[FilterStatus.INSTALLED] = installedCount
         counts[FilterStatus.DOWNLOADED] = downloadedCount
         counts[FilterStatus.UPDATE_AVAILABLE] = updateCount
+        counts[FilterStatus.NEW] = newCount
         counts
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
@@ -246,6 +259,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _installedPackages,
         _downloadedReleases,
         _selectedFilter,
+        _sortMode,
         _installQueue
     ) { args ->
         val list = args[0] as List<GameData>
@@ -253,20 +267,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val installed = args[2] as Map<String, Long>
         val downloaded = args[3] as Set<String>
         val filter = args[4] as FilterStatus
-        val queue = args[5] as List<InstallTaskState>
+        val sort = args[5] as SortMode
+        val queue = args[6] as List<InstallTaskState>
 
         val firstInQueue = queue.firstOrNull()?.releaseName
+        val lastSync = prefs.getLong("last_catalog_sync_time", 0L)
 
-        val filteredByQuery = if (query.isBlank()) {
-            list
-        } else {
-            list.filter { 
-                it.gameName.contains(query, ignoreCase = true) || 
-                it.packageName.contains(query, ignoreCase = true) 
+        val filteredList = list.filter { game ->
+            val installedVersion = installed[game.packageName]
+            val catalogVersion = game.versionCode.toLongOrNull() ?: 0L
+            val status = when {
+                installedVersion == null -> InstallStatus.NOT_INSTALLED
+                catalogVersion > installedVersion -> InstallStatus.UPDATE_AVAILABLE
+                else -> InstallStatus.INSTALLED
             }
+            val isDownloaded = downloaded.contains(game.releaseName)
+
+            val matchesQuery = query.isBlank() || 
+                game.gameName.contains(query, ignoreCase = true) || 
+                game.packageName.contains(query, ignoreCase = true)
+
+            val matchesFilter = when (filter) {
+                FilterStatus.FAVORITES -> game.isFavorite
+                FilterStatus.INSTALLED -> status != InstallStatus.NOT_INSTALLED
+                FilterStatus.DOWNLOADED -> isDownloaded
+                FilterStatus.UPDATE_AVAILABLE -> status == InstallStatus.UPDATE_AVAILABLE
+                FilterStatus.NEW -> game.lastUpdated > lastSync && lastSync != 0L
+                FilterStatus.ALL -> true
+            }
+
+            matchesQuery && matchesFilter
+        }
+
+        val sortedList = when (sort) {
+            SortMode.NAME_ASC -> filteredList.sortedWith(compareBy<GameData> {
+                val c = it.gameName.firstOrNull() ?: ' '
+                when {
+                    c == '_' -> 0
+                    c.isDigit() -> 1
+                    else -> 2
+                }
+            }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.gameName })
+            SortMode.NAME_DESC -> filteredList.sortedByDescending { it.gameName }
+            SortMode.LAST_UPDATED -> filteredList.sortedByDescending { it.lastUpdated }
+            SortMode.SIZE -> filteredList.sortedByDescending { it.sizeBytes ?: 0L }
+            SortMode.POPULARITY -> filteredList.sortedByDescending { it.popularity }
         }
         
-        filteredByQuery.mapNotNull { game ->
+        sortedList.map { game ->
             val installedVersion = installed[game.packageName]
             val catalogVersion = game.versionCode.toLongOrNull() ?: 0L
             
@@ -278,14 +326,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             
             val isDownloaded = downloaded.contains(game.releaseName)
             val queueTask = queue.find { it.releaseName == game.releaseName }
-
-            when (filter) {
-                FilterStatus.FAVORITES -> if (!game.isFavorite) return@mapNotNull null
-                FilterStatus.INSTALLED -> if (status == InstallStatus.NOT_INSTALLED) return@mapNotNull null
-                FilterStatus.DOWNLOADED -> if (!isDownloaded) return@mapNotNull null
-                FilterStatus.UPDATE_AVAILABLE -> if (status != InstallStatus.UPDATE_AVAILABLE) return@mapNotNull null
-                FilterStatus.ALL -> {}
-            }
 
             val iconLocations = listOf(
                 File(repository.iconsDir, "${game.packageName}.png"),
@@ -310,8 +350,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isDownloaded = isDownloaded,
                 isFavorite = game.isFavorite,
                 size = if (game.sizeBytes != null && game.sizeBytes > 0) formatSize(game.sizeBytes) else if (game.sizeBytes == -1L) "Error" else null,
+                sizeBytes = game.sizeBytes ?: 0L,
                 description = game.description,
-                screenshotUrls = game.screenshotUrls
+                screenshotUrls = game.screenshotUrls,
+                lastUpdated = game.lastUpdated,
+                popularity = game.popularity
             )
         }
     }
@@ -621,6 +664,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             
             if (missing.isNotEmpty()) return@launch
 
+            val now = System.currentTimeMillis()
             _isRefreshing.value = true
             _error.value = null
             try {
@@ -636,6 +680,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val installed = repository.getInstalledPackagesMap()
                     _installedPackages.value = installed
                     refreshDownloadedReleases(freshGames)
+
+                    // Store current sync time after successful sync
+                    prefs.edit().putLong("last_catalog_sync_time", now).apply()
                 }
                 priorityUpdateChannel.trySend(Unit)
             } catch (e: Exception) {
@@ -712,6 +759,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setFilter(filter: FilterStatus) {
         _selectedFilter.value = filter
+        priorityUpdateChannel.trySend(Unit)
+    }
+
+    fun setSortMode(mode: SortMode) {
+        _sortMode.value = mode
         priorityUpdateChannel.trySend(Unit)
     }
 

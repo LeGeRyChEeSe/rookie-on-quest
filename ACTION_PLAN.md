@@ -26,6 +26,8 @@ This document outlines the strategic priorities for the project, categorized by 
 | **Custom Install Script**      | Added support for `install.txt` parsing to handle complex data placement (e.g. Quake3). |
 | **Battery Optimization**       | Added permission flow to ignore battery optimizations for reliable background downloads.  |
 | **Favorites System**           | Implemented local favorites with persistent database storage and UI filtering.          |
+| **Unified Progress Tracking**  | Reactive progress indicators for the entire lifecycle (Download → Extract → Install).   |
+| **Advanced Sorting Options**   | Added sorting by Name, Size, Date, and Popularity plus a "New" games filter.           |
 
 ---
 
@@ -34,11 +36,6 @@ This document outlines the strategic priorities for the project, categorized by 
 
 ### 📦 Package Management
 - [ ] **Shizuku Integration:** Implement silent, background installation to remove manual ADB/FileProvider friction.
-- [x] **Install Queue:** Background task management with user-controlled priority and pause/resume.
-
-### 🎨 Core Feedback
-- [x] **Unified Progress Tracking:** Reactive progress indicators for the entire lifecycle (Download → Extract → Install).
-- [x] **Expanded Details:** High-density UI for screenshots and game descriptions.
 
 ---
 
@@ -51,10 +48,6 @@ This document outlines the strategic priorities for the project, categorized by 
 
 ### 🔍 Discovery Tools
 - [ ] **Clean Title Parsing:** Regex-based cleaning to improve catalog readability (stripping prefixes and underscores).
-- [x] **Smart Filtering:** Multi-criteria filtering by installation status and download state.
-
-### 🌐 Connectivity
-- [x] **Offline Resilience:** Full Room-backed browsing mode for users with intermittent connectivity.
 
 ---
 
@@ -66,7 +59,6 @@ This document outlines the strategic priorities for the project, categorized by 
 - [ ] **Skeleton UI:** Shimmer effects for a smoother perceived loading experience during database or image fetches.
 
 ### 📝 Content Depth
-- [x] **Detailed Component:** Integrated descriptions, screenshots, and direct uninstallation controls.
 - [ ] **Data Management:** Integrated backup and restore functionality for `/Android/data/` save files.
 
 ---
@@ -76,4 +68,3 @@ This document outlines the strategic priorities for the project, categorized by 
 
 ### 🏗️ Architecture
 - [ ] **Extensible Repositories:** Support for user-defined JSON catalog sources within settings.
-- [x] **Diagnostic Export:** "One-tap" log collection and export to facilitate remote troubleshooting.

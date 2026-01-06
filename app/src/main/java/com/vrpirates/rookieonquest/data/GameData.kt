@@ -8,5 +8,7 @@ data class GameData(
     val sizeBytes: Long? = null,
     val description: String? = null,
     val screenshotUrls: List<String>? = null,
+    val lastUpdated: Long = System.currentTimeMillis(),
+    val popularity: Int = 0,
     val isFavorite: Boolean = false
 )
