@@ -1,0 +1,75 @@
+# Workflow Status Template
+
+# This tracks progress through BMM methodology Analysis, Planning, and Solutioning phases.
+# Implementation phase is tracked separately in sprint-status.yaml
+
+generated: "2026-01-09"
+project: "rookie-on-quest"
+project_type: "application"
+selected_track: "bmad-method"
+field_type: "brownfield"
+workflow_path: "method-brownfield.yaml"
+
+workflow_status:
+  - id: "document-project"
+    name: "Document Project"
+    status: "docs/index.md"
+    agent: "analyst"
+    command: "/bmad:bmm:workflows:document-project"
+    description: "Understand existing codebase before planning"
+    
+  - id: "brainstorm-project"
+    name: "Brainstorm"
+    status: "optional"
+    agent: "analyst"
+    command: "/bmad:bmm:workflows:brainstorming"
+    description: "Creative exploration and ideation"
+
+  - id: "research"
+    name: "Research"
+    status: "optional"
+    agent: "analyst"
+    command: "/bmad:bmm:workflows:research"
+    description: "Technical/competitive analysis"
+
+  - id: "prd"
+    name: "Create PRD"
+    status: "required"
+    agent: "pm"
+    command: "/bmad:bmm:workflows:create-prd"
+    description: "Product Requirements Document"
+
+  - id: "create-ux-design"
+    name: "UX Design"
+    status: "conditional"
+    agent: "ux-designer"
+    command: "/bmad:bmm:workflows:create-ux-design"
+    description: "User Experience Design (if UI involved)"
+
+  - id: "create-architecture"
+    name: "Create Architecture"
+    status: "required"
+    agent: "architect"
+    command: "/bmad:bmm:workflows:create-architecture"
+    description: "System architecture document"
+
+  - id: "create-epics-and-stories"
+    name: "Create Epics & Stories"
+    status: "required"
+    agent: "pm"
+    command: "/bmad:bmm:workflows:create-epics-and-stories"
+    description: "Break down work into implementable units"
+
+  - id: "implementation-readiness"
+    name: "Check Readiness"
+    status: "required"
+    agent: "architect"
+    command: "/bmad:bmm:workflows:implementation-readiness"
+    description: "Validate artifacts before implementation"
+
+  - id: "sprint-planning"
+    name: "Sprint Planning"
+    status: "required"
+    agent: "sm"
+    command: "/bmad:bmm:workflows:sprint-planning"
+    description: "Initialize implementation phase"

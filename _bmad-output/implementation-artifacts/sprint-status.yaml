@@ -1,0 +1,93 @@
+# generated: 2026-01-09
+# project: rookie-on-quest
+# tracking_system: file-system
+# story_location: e:\Unity\rookie-on-quest\_bmad-output\implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-01-09
+project: rookie-on-quest
+tracking_system: file-system
+story_location: e:\Unity\rookie-on-quest\_bmad-output\implementation-artifacts
+
+development_status:
+  epic-1: in-progress
+  1-1-room-database-queue-table-setup: ready-for-dev
+  1-2-queue-state-migration-from-v2-4-0: backlog
+  1-3-workmanager-download-task-integration: backlog
+  1-4-download-queue-ui-with-persist-resume: backlog
+  1-5-http-range-resumption-for-interrupted-downloads: backlog
+  1-6-7z-extraction-with-progress-tracking: backlog
+  1-7-apk-installation-with-fileprovider: backlog
+  1-8-sequential-permission-flow: backlog
+  epic-1-retrospective: optional
+
+  epic-2: backlog
+  2-1-stickman-animation-state-machine-foundation: backlog
+  2-2-phase-specific-animation-implementations: backlog
+  2-3-global-progress-indicator-integration: backlog
+  2-4-contextual-message-system-for-download-install-modes: backlog
+  2-5-animation-performance-optimization-for-quest-vr: backlog
+  epic-2-retrospective: optional
+
+  epic-3: backlog
+  3-1-android-notification-channels-setup: backlog
+  3-2-installation-complete-notifications-with-sound: backlog
+  3-3-error-notifications-system: backlog
+  3-4-quest-vr-overlay-notification-compatibility: backlog
+  epic-3-retrospective: optional
+
+  epic-4: backlog
+  4-1-metadata-load-progress-tracking-system: backlog
+  4-2-conditional-sort-by-size-with-ui-feedback: backlog
+  4-3-catalog-update-detection-and-synchronization: backlog
+  epic-4-retrospective: optional
+
+  epic-5: backlog
+  5-1-network-state-detection-system: backlog
+  5-2-offline-mode-ui-indicators-and-cached-catalog-functionality: backlog
+  5-3-pre-downloaded-game-installation-offline: backlog
+  5-4-automatic-catalog-sync-on-connection-restoration: backlog
+  epic-5-retrospective: optional
+
+  epic-6: backlog
+  6-1-shizuku-sdk-integration-and-runtime-detection: backlog
+  6-2-silent-apk-installation-with-shizuku: backlog
+  6-3-graceful-fallback-to-fileprovider-installation: backlog
+  epic-6-retrospective: optional
+
+  epic-7: backlog
+  7-1-enhanced-catalog-browsing-with-thumbnails-and-icons: backlog
+  7-2-search-and-filter-system: backlog
+  7-3-favorites-system: backlog
+  7-4-game-details-view: backlog
+  7-5-app-version-display-and-github-update-check: backlog
+  7-6-diagnostic-log-export-and-manual-catalog-sync: backlog
+  epic-7-retrospective: optional
