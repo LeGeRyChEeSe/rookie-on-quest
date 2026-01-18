@@ -39,3 +39,7 @@ name,description,module,path
 "testarch-trace","Generate requirements-to-tests traceability matrix, analyze coverage, and make quality gate decision (PASS/CONCERNS/FAIL/WAIVED)","bmm","_bmad/bmm/workflows/testarch/trace/workflow.yaml"
 "workflow-init","Initialize a new BMM project by determining level, type, and creating workflow path","bmm","_bmad/bmm/workflows/workflow-status/init/workflow.yaml"
 "workflow-status","Lightweight status checker - answers """"what should I do now?"""" for any agent. Reads YAML status file for workflow tracking. Use workflow-init for new projects.","bmm","_bmad/bmm/workflows/workflow-status/workflow.yaml"
+"module","Quad-modal workflow for creating BMAD modules (Brief + Create + Edit + Validate)","bmb","_bmad/bmb/workflows/module/workflow.md"
+"workflow","Create structured standalone workflows using markdown-based step architecture (tri-modal: create, validate, edit)","bmb","_bmad/bmb/workflows/workflow/workflow.md"
+"prd","PRD tri-modal workflow - Create, Validate, or Edit comprehensive PRDs","bmm","_bmad/bmm/workflows/2-plan-workflows/prd/workflow.md"
+"quick-spec","Conversational spec engineering - ask questions, investigate code, produce implementation-ready tech-spec.","bmm","_bmad/bmm/workflows/bmad-quick-flow/quick-spec/workflow.md"

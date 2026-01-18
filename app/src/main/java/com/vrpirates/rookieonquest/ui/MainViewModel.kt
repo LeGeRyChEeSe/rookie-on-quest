@@ -16,6 +16,7 @@ import com.vrpirates.rookieonquest.data.MainRepository
 import com.vrpirates.rookieonquest.network.GitHubRelease
 import com.vrpirates.rookieonquest.network.GitHubService
 import kotlinx.coroutines.*
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.selects.onTimeout
@@ -76,11 +77,46 @@ enum class InstallTaskStatus {
     QUEUED, DOWNLOADING, EXTRACTING, INSTALLING, PAUSED, COMPLETED, FAILED
 }
 
-fun InstallTaskStatus.isProcessing(): Boolean = 
+fun InstallTaskStatus.isProcessing(): Boolean =
     this == InstallTaskStatus.QUEUED ||
-    this == InstallTaskStatus.DOWNLOADING || 
-    this == InstallTaskStatus.EXTRACTING || 
+    this == InstallTaskStatus.DOWNLOADING ||
+    this == InstallTaskStatus.EXTRACTING ||
     this == InstallTaskStatus.INSTALLING
+
+/**
+ * Maps a game name's first character to its alphabet group character.
+ * Used for both sorting order and alphabet navigation to ensure consistency.
+ *
+ * Rules:
+ * - '_' prefix → '_' group (comes first in sort)
+ * - Digits (0-9) → '#' group (comes second in sort)
+ * - Letters → uppercase letter group
+ * - Empty/null → '_' group
+ *
+ * @param gameName The full game name to extract the group character from
+ * @return The mapped character for alphabet grouping
+ */
+fun getAlphabetGroupChar(gameName: String): Char {
+    val firstChar = gameName.trim().firstOrNull()?.uppercaseChar() ?: '_'
+    return when {
+        firstChar == '_' -> '_'
+        firstChar.isDigit() -> '#'
+        else -> firstChar
+    }
+}
+
+/**
+ * Returns the sort priority for alphabet groups.
+ * Lower values sort first.
+ *
+ * @param groupChar The alphabet group character from getAlphabetGroupChar()
+ * @return Sort priority (0 = '_', 1 = '#', 2 = letters)
+ */
+fun getAlphabetSortPriority(groupChar: Char): Int = when (groupChar) {
+    '_' -> 0
+    '#' -> 1
+    else -> 2
+}
 
 @Immutable
 data class InstallTaskState(
@@ -94,8 +130,99 @@ data class InstallTaskState(
     val totalSize: String? = null,
     val isDownloadOnly: Boolean = false,
     val totalBytes: Long = 0L,
+    val downloadedBytes: Long? = null,
     val error: String? = null
 )
+
+/**
+ * Maps Room InstallStatus (from data layer) to UI InstallTaskStatus
+ */
+fun com.vrpirates.rookieonquest.data.InstallStatus.toTaskStatus(): InstallTaskStatus {
+    return when (this) {
+        com.vrpirates.rookieonquest.data.InstallStatus.QUEUED -> InstallTaskStatus.QUEUED
+        com.vrpirates.rookieonquest.data.InstallStatus.DOWNLOADING -> InstallTaskStatus.DOWNLOADING
+        com.vrpirates.rookieonquest.data.InstallStatus.EXTRACTING -> InstallTaskStatus.EXTRACTING
+        com.vrpirates.rookieonquest.data.InstallStatus.COPYING_OBB -> InstallTaskStatus.INSTALLING // COPYING_OBB is part of install phase, map to INSTALLING
+        com.vrpirates.rookieonquest.data.InstallStatus.INSTALLING -> InstallTaskStatus.INSTALLING
+        com.vrpirates.rookieonquest.data.InstallStatus.PAUSED -> InstallTaskStatus.PAUSED
+        com.vrpirates.rookieonquest.data.InstallStatus.COMPLETED -> InstallTaskStatus.COMPLETED
+        com.vrpirates.rookieonquest.data.InstallStatus.FAILED -> InstallTaskStatus.FAILED
+    }
+}
+
+/**
+ * Maps UI InstallTaskStatus to Room InstallStatus (for saving to database)
+ */
+fun InstallTaskStatus.toDataStatus(): com.vrpirates.rookieonquest.data.InstallStatus {
+    return when (this) {
+        InstallTaskStatus.QUEUED -> com.vrpirates.rookieonquest.data.InstallStatus.QUEUED
+        InstallTaskStatus.DOWNLOADING -> com.vrpirates.rookieonquest.data.InstallStatus.DOWNLOADING
+        InstallTaskStatus.EXTRACTING -> com.vrpirates.rookieonquest.data.InstallStatus.EXTRACTING
+        InstallTaskStatus.INSTALLING -> com.vrpirates.rookieonquest.data.InstallStatus.INSTALLING
+        InstallTaskStatus.PAUSED -> com.vrpirates.rookieonquest.data.InstallStatus.PAUSED
+        InstallTaskStatus.COMPLETED -> com.vrpirates.rookieonquest.data.InstallStatus.COMPLETED
+        InstallTaskStatus.FAILED -> com.vrpirates.rookieonquest.data.InstallStatus.FAILED
+    }
+}
+
+/**
+ * Converts QueuedInstallEntity from Room to UI InstallTaskState
+ * Uses pre-fetched game metadata from cache to avoid N+1 queries
+ *
+ * @param gameDataCache Pre-loaded map of releaseName -> GameData (from batch query)
+ */
+fun com.vrpirates.rookieonquest.data.QueuedInstallEntity.toInstallTaskState(
+    gameDataCache: Map<String, com.vrpirates.rookieonquest.data.GameData>
+): InstallTaskState {
+    val gameData = gameDataCache[releaseName]
+    val statusEnum = statusEnum.toTaskStatus()
+
+    // Generate status message based on current state
+    val message = when (statusEnum) {
+        InstallTaskStatus.QUEUED -> "Queued"
+        InstallTaskStatus.DOWNLOADING -> "Downloading..."
+        InstallTaskStatus.EXTRACTING -> "Extracting..."
+        InstallTaskStatus.INSTALLING -> "Installing..."
+        InstallTaskStatus.PAUSED -> "Paused"
+        InstallTaskStatus.COMPLETED -> "Completed"
+        InstallTaskStatus.FAILED -> "Failed"
+    }
+
+    // Format size strings
+    val currentSize = downloadedBytes?.let { formatBytes(it) }
+    val totalSizeStr = totalBytes?.let { formatBytes(it) }
+
+    return InstallTaskState(
+        releaseName = releaseName,
+        gameName = gameData?.gameName ?: releaseName,
+        packageName = gameData?.packageName ?: "",
+        status = statusEnum,
+        progress = progress,
+        message = message,
+        currentSize = currentSize,
+        totalSize = totalSizeStr,
+        isDownloadOnly = isDownloadOnly,
+        totalBytes = totalBytes ?: 0L,
+        downloadedBytes = downloadedBytes,
+        error = null // Error state is transient, not persisted
+    )
+}
+
+/**
+ * Format bytes to human-readable string
+ */
+private fun formatBytes(bytes: Long): String {
+    val kb = 1024L
+    val mb = kb * 1024
+    val gb = mb * 1024
+
+    return when {
+        bytes >= gb -> "%.2f GB".format(bytes / gb.toDouble())
+        bytes >= mb -> "%.2f MB".format(bytes / mb.toDouble())
+        bytes >= kb -> "%.2f KB".format(bytes / kb.toDouble())
+        else -> "$bytes B"
+    }
+}
 
 data class InstallState(
     val isInstalling: Boolean = false,
@@ -131,7 +258,7 @@ data class GameItemState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val TAG = "MainViewModel"
     private val repository = MainRepository(application)
-    private val prefs = application.getSharedPreferences("rookie_prefs", Context.MODE_PRIVATE)
+    private val prefs = application.getSharedPreferences(com.vrpirates.rookieonquest.data.Constants.PREFS_NAME, Context.MODE_PRIVATE)
     
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery
@@ -171,9 +298,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isAppVisible = MutableStateFlow(false)
 
-    // Queue Management
-    private val _installQueue = MutableStateFlow<List<InstallTaskState>>(emptyList())
-    val installQueue: StateFlow<List<InstallTaskState>> = _installQueue
+    // Queue Management (v2.5.0 - Room DB as source of truth)
+    // Single StateFlow derived from Room DB - installQueue IS the source of truth for UI
+    // Internal code uses installQueue.value for reads; Room DB updates propagate automatically
+    // OPTIMIZATION: Uses batch query to fetch all game metadata in 1 DB call instead of N+1
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val installQueue: StateFlow<List<InstallTaskState>> = repository.getAllQueuedInstalls()
+        .flatMapLatest { entities ->
+            flow {
+                if (entities.isEmpty()) {
+                    emit(emptyList())
+                    return@flow
+                }
+
+                // BATCH QUERY: Fetch all game metadata in a single DB call (avoids N+1 problem)
+                val releaseNames = entities.map { it.releaseName }
+                val gameDataCache = repository.getGamesByReleaseNames(releaseNames)
+
+                // Convert entities using cached metadata (O(1) lookup per entity)
+                val tasks = entities.mapNotNull { entity ->
+                    runCatching {
+                        entity.toInstallTaskState(gameDataCache)
+                    }.getOrElse {
+                        Log.e(TAG, "Failed to convert entity to task state: ${entity.releaseName}", it)
+                        null
+                    }
+                }
+                emit(tasks)
+            }
+        }
+        .flowOn(Dispatchers.IO)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _showInstallOverlay = MutableStateFlow(false)
     val showInstallOverlay: StateFlow<Boolean> = _showInstallOverlay
@@ -260,7 +415,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _downloadedReleases,
         _selectedFilter,
         _sortMode,
-        _installQueue
+        installQueue
     ) { args ->
         val list = args[0] as List<GameData>
         val query = args[1] as String
@@ -301,12 +456,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val sortedList = when (sort) {
             SortMode.NAME_ASC -> filteredList.sortedWith(compareBy<GameData> {
-                val c = it.gameName.firstOrNull() ?: ' '
-                when {
-                    c == '_' -> 0
-                    c.isDigit() -> 1
-                    else -> 2
-                }
+                getAlphabetSortPriority(getAlphabetGroupChar(it.gameName))
             }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.gameName })
             SortMode.NAME_DESC -> filteredList.sortedByDescending { it.gameName }
             SortMode.LAST_UPDATED -> filteredList.sortedByDescending { it.lastUpdated }
@@ -366,12 +516,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val chars = mutableListOf<Char>()
             val charToIndex = mutableMapOf<Char, Int>()
             list.forEachIndexed { index, game ->
-                val firstChar = game.name.trim().firstOrNull()?.uppercaseChar() ?: '_'
-                val mappedChar = when {
-                    firstChar == '_' -> '_'
-                    firstChar.isDigit() -> '#' 
-                    else -> firstChar
-                }
+                val mappedChar = getAlphabetGroupChar(game.name)
                 if (!charToIndex.containsKey(mappedChar)) {
                     chars.add(mappedChar)
                     charToIndex[mappedChar] = index
@@ -389,7 +534,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val error: StateFlow<String?> = _error
 
     // Composite Install State for legacy UI support
-    val installState: StateFlow<InstallState> = _installQueue.map { queue ->
+    val installState: StateFlow<InstallState> = installQueue.map { queue ->
         val active = queue.find { it.status.isProcessing() }
         if (active != null) {
             InstallState(
@@ -407,6 +552,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), InstallState())
     
     init {
+        // Run v2.4.0 queue migration first (if needed)
+        viewModelScope.launch {
+            try {
+                val migratedCount = repository.migrateLegacyQueueIfNeeded()
+                if (migratedCount > 0) {
+                    Log.i(TAG, "Migrated $migratedCount items from v2.4.0 queue")
+                    _events.emit(MainEvent.ShowMessage("Restored $migratedCount queued items from previous version"))
+                } else if (migratedCount < 0) {
+                    // Migration returned error code (-1)
+                    Log.w(TAG, "Migration returned error code: $migratedCount")
+                    _events.emit(MainEvent.ShowMessage("Note: Could not restore previous download queue"))
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Migration failed, continuing with empty queue", e)
+                _events.emit(MainEvent.ShowMessage("Note: Could not restore previous download queue"))
+            }
+        }
+
         viewModelScope.launch {
             _isUpdateCheckInProgress.value = true
             try {
@@ -795,40 +958,65 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val game = _allGames.value.find { it.releaseName == releaseName } ?: return
+        val game = _allGames.value.find { it.releaseName == releaseName }
+        if (game == null) {
+            // Catalog not yet loaded or game not found
+            viewModelScope.launch {
+                if (_allGames.value.isEmpty()) {
+                    _events.emit(MainEvent.ShowMessage("Please wait for the catalog to load"))
+                } else {
+                    _events.emit(MainEvent.ShowMessage("Game not found in catalog"))
+                }
+            }
+            return
+        }
         
-        val existingTask = _installQueue.value.find { it.releaseName == releaseName }
+        val existingTask = installQueue.value.find { it.releaseName == releaseName }
         if (existingTask != null) {
-            val isFirst = _installQueue.value.firstOrNull()?.releaseName == releaseName
-            if (existingTask.status == InstallTaskStatus.PAUSED && isFirst) {
-                resumeInstall(releaseName)
-            } else {
-                viewModelScope.launch {
-                    _events.emit(MainEvent.ShowMessage("${game.gameName} is already in the queue"))
+            val isFirst = installQueue.value.firstOrNull()?.releaseName == releaseName
+            when {
+                // FAILED tasks: Promote to front and relaunch (retry UX)
+                existingTask.status == InstallTaskStatus.FAILED -> {
+                    promoteTask(releaseName)
+                    viewModelScope.launch {
+                        _events.emit(MainEvent.ShowMessage("Retrying ${game.gameName}..."))
+                    }
+                }
+                // PAUSED tasks at front: Resume
+                existingTask.status == InstallTaskStatus.PAUSED && isFirst -> {
+                    resumeInstall(releaseName)
+                }
+                // All other cases: Already in queue
+                else -> {
+                    viewModelScope.launch {
+                        _events.emit(MainEvent.ShowMessage("${game.gameName} is already in the queue"))
+                    }
                 }
             }
             return
         }
 
-        val newTask = InstallTaskState(
-            releaseName = game.releaseName,
-            gameName = game.gameName,
-            packageName = game.packageName,
-            status = InstallTaskStatus.QUEUED,
-            isDownloadOnly = downloadOnly
-        )
+        // Add to Room DB (which will update StateFlow via Flow observer)
+        viewModelScope.launch {
+            try {
+                repository.addToQueue(
+                    releaseName = game.releaseName,
+                    status = com.vrpirates.rookieonquest.data.InstallStatus.QUEUED,
+                    isDownloadOnly = downloadOnly
+                )
 
-        val isShowing = _showInstallOverlay.value
-        val alreadyProcessing = _installQueue.value.any { it.status.isProcessing() }
-        
-        _installQueue.update { it + newTask }
-        
-        if (!isShowing && !alreadyProcessing) {
-            _viewedReleaseName.value = releaseName
-            _showInstallOverlay.value = true
-        } else {
-            viewModelScope.launch {
-                _events.emit(MainEvent.ShowMessage("${game.gameName} added to queue"))
+                val isShowing = _showInstallOverlay.value
+                val alreadyProcessing = installQueue.value.any { it.status.isProcessing() }
+
+                if (!isShowing && !alreadyProcessing) {
+                    _viewedReleaseName.value = releaseName
+                    _showInstallOverlay.value = true
+                } else {
+                    _events.emit(MainEvent.ShowMessage("${game.gameName} added to queue"))
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to add game to queue", e)
+                _events.emit(MainEvent.ShowMessage("Failed to add ${game.gameName} to queue"))
             }
         }
         
@@ -836,7 +1024,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun showOverlay() {
-        val currentQueue = _installQueue.value
+        val currentQueue = installQueue.value
         if (currentQueue.isEmpty()) return
 
         val taskToView = _viewedReleaseName.value?.let { v -> currentQueue.find { it.releaseName == v } }?.releaseName
@@ -855,9 +1043,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         queueProcessorJob = viewModelScope.launch {
             try {
                 while (isActive) {
-                    val nextTask = _installQueue.value.find { it.status == InstallTaskStatus.QUEUED }
+                    val nextTask = installQueue.value.find { it.status == InstallTaskStatus.QUEUED }
                     if (nextTask == null) {
-                        if (_installQueue.value.none { it.status == InstallTaskStatus.QUEUED }) {
+                        if (installQueue.value.none { it.status == InstallTaskStatus.QUEUED }) {
                             break 
                         }
                         delay(1000)
@@ -876,11 +1064,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val game = _allGames.value.find { it.releaseName == task.releaseName } ?: return
         
         // Double check status hasn't changed to PAUSED before we start
-        val latestTask = _installQueue.value.find { it.releaseName == task.releaseName }
+        val latestTask = installQueue.value.find { it.releaseName == task.releaseName }
         if (latestTask == null || latestTask.status != InstallTaskStatus.QUEUED) return
 
         // Auto-switch view if nothing is being viewed or the viewed task is not active
-        val currentViewed = _installQueue.value.find { it.releaseName == _viewedReleaseName.value }
+        val currentViewed = installQueue.value.find { it.releaseName == _viewedReleaseName.value }
         if (currentViewed == null || !currentViewed.status.isProcessing()) {
             _viewedReleaseName.value = task.releaseName
         }
@@ -905,6 +1093,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 updateTaskStatus(task.releaseName, InstallTaskStatus.COMPLETED)
                 refreshDownloadedReleases()
 
+                // Proactively clean up temp files immediately after success to free disk space
+                repository.cleanupInstall(task.releaseName, task.totalBytes)
+
                 if (apkFile != null && !task.isDownloadOnly) {
                     withContext(Dispatchers.Main) {
                         if (!_isAppVisible.value) {
@@ -916,13 +1107,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             
             delay(2000)
-            _installQueue.update { list -> list.filter { it.releaseName != task.releaseName } }
+            // Remove completed task from Room DB
+            viewModelScope.launch {
+                try {
+                    repository.removeFromQueue(task.releaseName)
+                    progressThrottleMap.remove(task.releaseName) // Clean up throttling state
+                    totalBytesWrittenSet.remove(task.releaseName) // Clean up totalBytes tracking
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to remove completed task from DB", e)
+                }
+            }
             
-            if (_installQueue.value.isEmpty()) {
+            if (installQueue.value.isEmpty()) {
                 _showInstallOverlay.value = false
                 _viewedReleaseName.value = null
             } else if (_viewedReleaseName.value == task.releaseName) {
-                val remaining = _installQueue.value
+                val remaining = installQueue.value
                 val nextActive = remaining.find { it.status.isProcessing() }
                 _viewedReleaseName.value = nextActive?.releaseName ?: remaining.firstOrNull()?.releaseName
             }
@@ -931,13 +1131,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (e is CancellationException) {
                 Log.d(TAG, "Task cancelled/paused: ${task.gameName}")
                 // Do not remove from queue, status is already set to PAUSED by pauseInstall()
+                // Throttle map cleanup is handled by pauseInstall() or cancelInstall()
             } else {
                 val errorMessage = e.message ?: "Unknown error"
                 Log.e(TAG, "Installation failed for ${task.gameName}", e)
-                
+
                 // Ensure the status is updated to FAILED so the UI shows it
                 updateTaskStatus(task.releaseName, InstallTaskStatus.FAILED, errorMessage)
-                
+
+                // Clean up throttle map on failure to prevent memory leak
+                progressThrottleMap.remove(task.releaseName)
+
                 // Specific handling for storage space to pause other tasks if needed or show prominent popup
                 if (errorMessage.contains("Insufficient storage space", ignoreCase = true)) {
                     _events.emit(MainEvent.ShowMessage("STORAGE ERROR: $errorMessage"))
@@ -955,35 +1159,92 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Updates task status in Room DB. Status updates are NOT throttled because:
+     * 1. State transitions (QUEUED→DOWNLOADING→EXTRACTING→INSTALLING→COMPLETED) must be immediate
+     *    for correct UI display and queue processor logic
+     * 2. Status changes are infrequent (5-7 per task) vs progress updates (hundreds per second)
+     * 3. Delayed status updates could cause race conditions in pause/resume/cancel operations
+     * 4. UI relies on status to show correct action buttons (Pause vs Resume, etc.)
+     *
+     * Terminal states (COMPLETED, FAILED) use NonCancellable context to ensure they persist
+     * even if the ViewModel is cleared during the write operation.
+     *
+     * Contrast with updateTaskProgress() which IS throttled to max 1 update per 500ms.
+     */
     private fun updateTaskStatus(releaseName: String, status: InstallTaskStatus, error: String? = null) {
-        _installQueue.update { list ->
-            list.map { 
-                if (it.releaseName == releaseName) it.copy(status = status, error = error) else it 
+        // Terminal states must persist even if ViewModel/coroutine is cancelled
+        val isTerminalState = status == InstallTaskStatus.COMPLETED || status == InstallTaskStatus.FAILED
+        val context = if (isTerminalState) NonCancellable else viewModelScope.coroutineContext
+
+        // Persist to Room DB immediately - NO THROTTLING (see doc above)
+        viewModelScope.launch(context) {
+            try {
+                repository.updateQueueStatus(releaseName, status.toDataStatus())
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to update task status in DB", e)
+                // Notify user of the failure so they're aware the state may be inconsistent
+                _events.emit(MainEvent.ShowMessage("Failed to save queue state. Please restart the app if issues persist."))
             }
         }
     }
 
+    // Throttling state for DB progress updates (NOT for status - see updateTaskStatus doc)
+    private val progressThrottleMap = mutableMapOf<String, Long>()
+    private val PROGRESS_THROTTLE_MS = 500L // Update DB max once every 500ms
+
+    // Tracks tasks where totalBytes has already been written to DB (optimization to avoid redundant writes)
+    private val totalBytesWrittenSet = mutableSetOf<String>()
+
+    /**
+     * Updates task progress in Room DB with throttling to prevent excessive I/O.
+     * Progress updates happen every 64KB of download (~hundreds/second), so we limit
+     * DB writes to max once every 500ms per task. Completion (progress >= 1.0) always updates.
+     *
+     * Optimization: After the first write that includes totalBytes, subsequent writes
+     * skip totalBytes since it's constant throughout the download.
+     */
     private fun updateTaskProgress(releaseName: String, message: String, progress: Float, current: Long, total: Long) {
-        _installQueue.update { list ->
-            list.map { 
-                if (it.releaseName == releaseName) {
-                    it.copy(
-                        message = message, 
-                        progress = progress, 
-                        currentSize = if (total > 0) formatSize(current) else null,
-                        totalSize = if (total > 0) formatSize(total) else null,
-                        totalBytes = total,
-                        error = null // Clear error if we are progressing
-                    )
-                } else it 
+        // Check throttle BEFORE launching coroutine to avoid memory pressure
+        val now = System.currentTimeMillis()
+        val lastUpdate = progressThrottleMap[releaseName] ?: 0L
+        val shouldUpdate = (now - lastUpdate) >= PROGRESS_THROTTLE_MS || progress >= 1.0f
+
+        if (!shouldUpdate) return // Early exit - no coroutine launched
+
+        progressThrottleMap[releaseName] = now
+
+        // Check if totalBytes has already been written for this task
+        val hasTotalBeenWritten = totalBytesWrittenSet.contains(releaseName)
+        val shouldWriteTotal = !hasTotalBeenWritten && total > 0
+
+        // Mark as written if we're about to write totalBytes for the first time
+        if (shouldWriteTotal) {
+            totalBytesWrittenSet.add(releaseName)
+        }
+
+        // Only now launch coroutine for DB persistence
+        viewModelScope.launch {
+            try {
+                repository.updateQueueProgress(
+                    releaseName = releaseName,
+                    progress = progress,
+                    downloadedBytes = if (current > 0) current else null,
+                    totalBytes = if (total > 0) total else null,
+                    skipTotalBytes = hasTotalBeenWritten // Skip if already written
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to update task progress in DB", e)
             }
         }
     }
 
     fun pauseInstall(releaseName: String) {
-        val task = _installQueue.value.find { it.releaseName == releaseName } ?: return
+        val task = installQueue.value.find { it.releaseName == releaseName } ?: return
         if (task.status.isProcessing() || task.status == InstallTaskStatus.QUEUED) {
             updateTaskStatus(releaseName, InstallTaskStatus.PAUSED)
+            progressThrottleMap.remove(releaseName) // Clean up throttling state on pause
+            totalBytesWrittenSet.remove(releaseName) // Reset so totalBytes is written on resume
             if (releaseName == activeReleaseName) {
                 currentTaskJob?.cancel()
             }
@@ -992,7 +1253,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun resumeInstall(releaseName: String) {
         // Only allow resume if it's the first in queue
-        val isFirst = _installQueue.value.firstOrNull()?.releaseName == releaseName
+        val isFirst = installQueue.value.firstOrNull()?.releaseName == releaseName
         if (isFirst) {
             _viewedReleaseName.value = releaseName
             updateTaskStatus(releaseName, InstallTaskStatus.QUEUED)
@@ -1001,7 +1262,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelInstall(releaseName: String) {
-        val task = _installQueue.value.find { it.releaseName == releaseName } ?: return
+        val task = installQueue.value.find { it.releaseName == releaseName } ?: return
         
         if (releaseName == activeReleaseName) {
             currentTaskJob?.cancel()
@@ -1009,11 +1270,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             repository.cleanupInstall(releaseName, task.totalBytes)
+            // Remove from Room DB
+            repository.removeFromQueue(releaseName)
+            progressThrottleMap.remove(releaseName) // Clean up throttling state
+            totalBytesWrittenSet.remove(releaseName) // Clean up totalBytes tracking
         }
-
-        _installQueue.update { list -> list.filter { it.releaseName != releaseName } }
         
-        val remaining = _installQueue.value
+        val remaining = installQueue.value
         if (_viewedReleaseName.value == releaseName) {
             _viewedReleaseName.value = remaining.find { it.status.isProcessing() }?.releaseName
                 ?: remaining.firstOrNull()?.releaseName
@@ -1029,9 +1292,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun promoteTask(releaseName: String) {
-        val currentQueue = _installQueue.value
+        val currentQueue = installQueue.value
         val task = currentQueue.find { it.releaseName == releaseName } ?: return
-        
+
         if (task.status == InstallTaskStatus.QUEUED || task.status == InstallTaskStatus.PAUSED || task.status == InstallTaskStatus.FAILED) {
             // Pause current processing task if any
             val previousActive = activeReleaseName
@@ -1039,15 +1302,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 updateTaskStatus(previousActive, InstallTaskStatus.PAUSED)
                 currentTaskJob?.cancel()
             }
-            
-            // Reorder queue: Put promoted task at the very top
-            _installQueue.update { list ->
-                val filtered = list.filter { it.releaseName != releaseName }
-                listOf(task.copy(status = InstallTaskStatus.QUEUED)) + filtered
+
+            // Reorder queue in Room DB atomically: promote to front AND set status to QUEUED
+            // Using single atomic transaction to prevent partial state updates
+            viewModelScope.launch {
+                try {
+                    if (task.status != InstallTaskStatus.QUEUED) {
+                        // Use atomic operation that promotes AND updates status in one transaction
+                        repository.promoteInQueueAndSetStatus(releaseName, com.vrpirates.rookieonquest.data.InstallStatus.QUEUED)
+                    } else {
+                        // Already QUEUED, just promote position
+                        repository.promoteInQueue(releaseName)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to promote task in DB", e)
+                    _events.emit(MainEvent.ShowMessage("Failed to promote task. Please try again."))
+                }
             }
-            
+
             _viewedReleaseName.value = releaseName
-            
+
             // Restart processor to pick up the new top task
             queueProcessorJob?.cancel()
             queueProcessorJob = null

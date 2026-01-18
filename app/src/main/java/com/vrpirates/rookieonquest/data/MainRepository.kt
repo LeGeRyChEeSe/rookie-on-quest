@@ -13,7 +13,6 @@ import com.vrpirates.rookieonquest.network.PublicConfig
 import com.vrpirates.rookieonquest.network.VrpService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -56,7 +55,7 @@ class MainRepository(private val context: Context) {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
         
-    private val prefs = context.getSharedPreferences("rookie_prefs", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(Constants.PREFS_NAME, Context.MODE_PRIVATE)
 
     private var cachedConfig: PublicConfig? = null
     private var decodedPassword: String? = null
@@ -1015,5 +1014,169 @@ class MainRepository(private val context: Context) {
     private fun md5(input: String): String {
         val bytes = MessageDigest.getInstance("MD5").digest(input.toByteArray())
         return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    // ==============================
+    // Queue Management (v2.5.0)
+    // ==============================
+
+    /**
+     * Returns a Flow of all queued installs from Room database
+     * Used by ViewModel to create StateFlow<List<InstallTaskState>>
+     */
+    fun getAllQueuedInstalls(): Flow<List<QueuedInstallEntity>> {
+        return db.queuedInstallDao().getAllFlow()
+    }
+
+    /**
+     * Gets game data by release name (used for queue state conversion)
+     */
+    suspend fun getGameByReleaseName(releaseName: String): GameData? = withContext(Dispatchers.IO) {
+        gameDao.getByReleaseName(releaseName)?.toData()
+    }
+
+    /**
+     * Batch query to get game data for multiple release names in a single DB call.
+     * Returns a map of releaseName -> GameData for O(1) lookup.
+     * Used to avoid N+1 queries when converting queue entities to UI state.
+     */
+    suspend fun getGamesByReleaseNames(releaseNames: List<String>): Map<String, GameData> = withContext(Dispatchers.IO) {
+        if (releaseNames.isEmpty()) return@withContext emptyMap()
+        gameDao.getByReleaseNames(releaseNames)
+            .associate { it.releaseName to it.toData() }
+    }
+
+    /**
+     * Runs migration from v2.4.0 legacy queue if needed
+     * Should be called once during app initialization
+     *
+     * @return Number of migrated items, 0 if no migration needed, -1 on failure
+     */
+    suspend fun migrateLegacyQueueIfNeeded(): Int = withContext(Dispatchers.IO) {
+        if (MigrationManager.needsMigration(context)) {
+            Log.i(TAG, "Legacy queue migration needed - starting migration")
+            val result = MigrationManager.migrateLegacyQueue(context, db)
+            if (result >= 0) {
+                Log.i(TAG, "Migration completed: $result items migrated")
+            } else {
+                Log.e(TAG, "Migration failed")
+            }
+            result
+        } else {
+            Log.d(TAG, "No legacy queue migration needed")
+            0
+        }
+    }
+
+    /**
+     * Adds a new install task to the queue in Room database.
+     * Uses atomic transaction to prevent race conditions with queue position.
+     */
+    suspend fun addToQueue(
+        releaseName: String,
+        status: InstallStatus = InstallStatus.QUEUED,
+        isDownloadOnly: Boolean = false
+    ) = withContext(Dispatchers.IO) {
+        // Create entity with placeholder position (will be set atomically by DAO)
+        val entity = QueuedInstallEntity.createValidated(
+            releaseName = releaseName,
+            status = status,
+            queuePosition = 0, // Placeholder - DAO will assign correct position atomically
+            isDownloadOnly = isDownloadOnly
+        )
+        // Use atomic insert that reads max position and inserts in single transaction
+        db.queuedInstallDao().insertAtNextPosition(entity)
+    }
+
+    /**
+     * Updates the status of a queued install.
+     * Status validation is enforced by InstallStatus enum type - only valid enum values can be passed.
+     */
+    suspend fun updateQueueStatus(
+        releaseName: String,
+        status: InstallStatus
+    ) = withContext(Dispatchers.IO) {
+        // InstallStatus enum guarantees status.name is always a valid status string
+        db.queuedInstallDao().updateStatus(
+            releaseName = releaseName,
+            status = status.name,
+            timestamp = System.currentTimeMillis()
+        )
+    }
+
+    /**
+     * Updates the progress of a queued install with validation.
+     * Progress values are coerced to valid range [0.0, 1.0].
+     * Bytes values are validated (downloadedBytes <= totalBytes when both present).
+     *
+     * @param skipTotalBytes If true, only updates progress and downloadedBytes (optimization
+     *        for subsequent calls where totalBytes is already set). Defaults to false.
+     */
+    suspend fun updateQueueProgress(
+        releaseName: String,
+        progress: Float,
+        downloadedBytes: Long?,
+        totalBytes: Long?,
+        skipTotalBytes: Boolean = false
+    ) = withContext(Dispatchers.IO) {
+        // Coerce progress to valid range instead of throwing (progress can overshoot during calculations)
+        val validatedProgress = progress.coerceIn(0.0f, 1.0f)
+
+        // Validate bytes relationship
+        if (downloadedBytes != null && totalBytes != null && downloadedBytes > totalBytes) {
+            Log.w(TAG, "updateQueueProgress: downloadedBytes ($downloadedBytes) > totalBytes ($totalBytes), clamping")
+        }
+        val validatedDownloadedBytes = if (downloadedBytes != null && totalBytes != null) {
+            downloadedBytes.coerceAtMost(totalBytes)
+        } else {
+            downloadedBytes
+        }
+
+        if (skipTotalBytes && validatedDownloadedBytes != null) {
+            // Optimized path: only update progress and downloadedBytes
+            db.queuedInstallDao().updateProgressAndBytes(
+                releaseName = releaseName,
+                progress = validatedProgress,
+                downloadedBytes = validatedDownloadedBytes,
+                timestamp = System.currentTimeMillis()
+            )
+        } else {
+            // Full update including totalBytes
+            db.queuedInstallDao().updateProgress(
+                releaseName = releaseName,
+                progress = validatedProgress,
+                downloadedBytes = validatedDownloadedBytes,
+                totalBytes = totalBytes,
+                timestamp = System.currentTimeMillis()
+            )
+        }
+    }
+
+    /**
+     * Removes an install task from the queue
+     */
+    suspend fun removeFromQueue(releaseName: String) = withContext(Dispatchers.IO) {
+        db.queuedInstallDao().deleteByReleaseName(releaseName)
+    }
+
+    /**
+     * Promotes a task to the front of the queue
+     * All operations happen atomically in a single Room transaction
+     */
+    suspend fun promoteInQueue(releaseName: String) = withContext(Dispatchers.IO) {
+        // Delegate to DAO method with @Transaction for atomic updates
+        db.queuedInstallDao().promoteToFront(releaseName)
+    }
+
+    /**
+     * Promotes a task to the front of the queue AND updates its status atomically.
+     * This is used when promoting a PAUSED or FAILED task that needs to restart.
+     * Both operations happen in a single Room transaction to prevent partial state updates.
+     *
+     * @param releaseName The task to promote
+     * @param status The new status to set (typically QUEUED)
+     */
+    suspend fun promoteInQueueAndSetStatus(releaseName: String, status: InstallStatus) = withContext(Dispatchers.IO) {
+        db.queuedInstallDao().promoteToFrontAndUpdateStatus(releaseName, status.name)
     }
 }

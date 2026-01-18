@@ -1,7 +1,7 @@
 installation:
-  version: 6.0.0-alpha.22
-  installDate: 2026-01-09T02:53:24.538Z
-  lastUpdated: 2026-01-09T02:53:24.538Z
+  version: 6.0.0-alpha.23
+  installDate: 2026-01-18T22:43:58.369Z
+  lastUpdated: 2026-01-18T22:43:58.369Z
 modules:
   - core
   - bmb
@@ -9,3 +9,7 @@ modules:
 ides:
   - gemini
   - claude-code
+  - kilo
+  - roo
+  - opencode
+  - qwen

@@ -51,3 +51,13 @@ Thumbs.db
 rookie/
 GEMINI.md
 temp_notes.md
+
+# Agent & IDE specific folders
+.claude/
+.continue/
+.cursor/
+.gemini/
+.kilocodemodes
+.opencode/
+.qwen/
+.roo/

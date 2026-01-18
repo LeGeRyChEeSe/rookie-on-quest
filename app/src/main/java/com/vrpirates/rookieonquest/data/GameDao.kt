@@ -26,9 +26,19 @@ interface GameDao {
     @Query("UPDATE games SET isFavorite = :isFavorite WHERE releaseName = :releaseName")
     suspend fun updateFavorite(releaseName: String, isFavorite: Boolean)
 
+    @Query("SELECT * FROM games WHERE releaseName = :releaseName LIMIT 1")
+    suspend fun getByReleaseName(releaseName: String): GameEntity?
+
+    /**
+     * Batch query to fetch multiple games by release names in a single DB call.
+     * Used to avoid N+1 queries when converting queue entities to UI state.
+     */
+    @Query("SELECT * FROM games WHERE releaseName IN (:releaseNames)")
+    suspend fun getByReleaseNames(releaseNames: List<String>): List<GameEntity>
+
     @Query("DELETE FROM games")
     suspend fun clearAll()
-    
+
     @Query("SELECT COUNT(*) FROM games")
     suspend fun getCount(): Int
 }
