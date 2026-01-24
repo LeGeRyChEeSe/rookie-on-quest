@@ -21,7 +21,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
-import okhttp3.OkHttpClient
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Request
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
@@ -32,6 +33,9 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration.Companion.milliseconds
+import androidx.work.WorkInfo
+import com.vrpirates.rookieonquest.data.NetworkModule
+import com.vrpirates.rookieonquest.worker.DownloadWorker
 
 sealed class MainEvent {
     data class Uninstall(val packageName: String) : MainEvent()
@@ -135,14 +139,28 @@ data class InstallTaskState(
 )
 
 /**
- * Maps Room InstallStatus (from data layer) to UI InstallTaskStatus
+ * Maps Room InstallStatus (from data layer) to UI InstallTaskStatus.
+ *
+ * ARCHITECTURAL NOTE: These mappers intentionally couple the data and UI layers.
+ * This is acceptable because:
+ * 1. Both enums represent the same domain concept (installation state)
+ * 2. The mapping is simple and unlikely to change independently
+ * 3. Introducing an intermediate layer would add complexity without benefit
+ *
+ * If the data layer statuses need to diverge significantly from UI statuses,
+ * consider moving these mappers to a dedicated StatusMapper object in
+ * the data package to improve testability and separation of concerns.
+ *
+ * Special cases:
+ * - COPYING_OBB (data) → INSTALLING (UI): OBB copying is a sub-phase of installation
+ *   and should not be visible as a distinct state to users
  */
 fun com.vrpirates.rookieonquest.data.InstallStatus.toTaskStatus(): InstallTaskStatus {
     return when (this) {
         com.vrpirates.rookieonquest.data.InstallStatus.QUEUED -> InstallTaskStatus.QUEUED
         com.vrpirates.rookieonquest.data.InstallStatus.DOWNLOADING -> InstallTaskStatus.DOWNLOADING
         com.vrpirates.rookieonquest.data.InstallStatus.EXTRACTING -> InstallTaskStatus.EXTRACTING
-        com.vrpirates.rookieonquest.data.InstallStatus.COPYING_OBB -> InstallTaskStatus.INSTALLING // COPYING_OBB is part of install phase, map to INSTALLING
+        com.vrpirates.rookieonquest.data.InstallStatus.COPYING_OBB -> InstallTaskStatus.INSTALLING // OBB copy is sub-phase of install
         com.vrpirates.rookieonquest.data.InstallStatus.INSTALLING -> InstallTaskStatus.INSTALLING
         com.vrpirates.rookieonquest.data.InstallStatus.PAUSED -> InstallTaskStatus.PAUSED
         com.vrpirates.rookieonquest.data.InstallStatus.COMPLETED -> InstallTaskStatus.COMPLETED
@@ -151,7 +169,14 @@ fun com.vrpirates.rookieonquest.data.InstallStatus.toTaskStatus(): InstallTaskSt
 }
 
 /**
- * Maps UI InstallTaskStatus to Room InstallStatus (for saving to database)
+ * Maps UI InstallTaskStatus to Room InstallStatus (for saving to database).
+ *
+ * NOTE: This is the reverse mapping of toTaskStatus(). Since the UI has fewer
+ * states than the data layer (no COPYING_OBB), this mapping is lossy in reverse.
+ * INSTALLING in UI maps to INSTALLING in data, never to COPYING_OBB.
+ *
+ * This asymmetry is intentional - COPYING_OBB is set directly by MainRepository,
+ * not through this mapper, ensuring correct state representation during OBB operations.
  */
 fun InstallTaskStatus.toDataStatus(): com.vrpirates.rookieonquest.data.InstallStatus {
     return when (this) {
@@ -340,6 +365,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var currentTaskJob: Job? = null
     private var activeReleaseName: String? = null
 
+    // Map of releaseName -> observation Job to prevent coroutine accumulation
+    // When observeDownloadWork is called for a releaseName that's already being observed,
+    // the previous Job is cancelled before starting a new one. This prevents memory leaks
+    // and duplicate processing that could occur on app restart or task resumption.
+    private val downloadObserverJobs = mutableMapOf<String, Job>()
+
+    // Map of task completion signals, keyed by releaseName.
+    // Each CompletableDeferred signals when that task's extraction/installation is complete.
+    // Allows runTask() to suspend until the full install pipeline finishes.
+    //
+    // This design supports:
+    // 1. Task-specific signal management (no state collision between tasks)
+    // 2. Clean cancellation on pause/cancel without affecting other tasks
+    // 3. Easy lookup and cleanup for any task by releaseName
+    // 4. Future extensibility if parallel task execution is ever needed
+    private val taskCompletionSignals = mutableMapOf<String, CompletableDeferred<Unit>>()
+
+    // Channel to signal when a new task has been added to the queue.
+    // This solves the race condition where startQueueProcessor() exits before
+    // the StateFlow has emitted the newly inserted task from Room DB.
+    // Using CONFLATED channel: only the most recent signal matters (task was added)
+    private val taskAddedSignal = Channel<Unit>(Channel.CONFLATED)
+
     private var isPermissionFlowActive = false
     private var previousMissingCount = 0
     private var refreshJob: Job? = null
@@ -351,10 +399,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .build()
         .create(GitHubService::class.java)
 
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
+    // Use shared OkHttpClient from NetworkModule (singleton)
+    private val okHttpClient = NetworkModule.okHttpClient
 
     private val _allGames = repository.getAllGamesFlow()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -595,6 +641,152 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+
+        // Resume observation of any in-progress WorkManager downloads after app restart
+        viewModelScope.launch {
+            resumeActiveDownloadObservations()
+        }
+    }
+
+    /**
+     * Resumes observation of any in-progress downloads after app restart.
+     * WorkManager automatically re-enqueues work on device reboot/process death,
+     * but we need to re-observe the WorkInfo to handle completion/failure.
+     *
+     * CRITICAL: Also handles zombie states (EXTRACTING/INSTALLING) that can occur
+     * when the app is killed during post-download processing.
+     *
+     * Recovery strategies:
+     * - EXTRACTING with completed marker: Reset to QUEUED to be processed sequentially by queue processor
+     * - EXTRACTING/INSTALLING without marker: Reset to QUEUED for full retry
+     * - DOWNLOADING/QUEUED: Resume WorkManager observation or re-enqueue
+     *
+     * CONCURRENCY FIX: All zombie tasks are reset to QUEUED and processed by the queue processor
+     * one at a time, preventing parallel extractions that would violate sequential queue logic.
+     */
+    private suspend fun resumeActiveDownloadObservations() {
+        // CRITICAL FIX: Use repository.getAllQueuedInstalls().first() instead of StateFlow
+        // to ensure we wait for DB emission regardless of time.
+        //
+        // The StateFlow (installQueue) is created with stateIn(..., emptyList()) and uses
+        // flowOn(Dispatchers.IO), which creates a race condition window where the StateFlow
+        // hasn't received Room's initial emission yet. Using .first() on the repository Flow
+        // guarantees we wait for Room to emit, whether the queue is empty or has tasks.
+        //
+        // This fix prevents the startup race condition where resumeActiveDownloadObservations
+        // would exit early thinking the queue is empty, when Room simply hasn't emitted yet.
+        val activeQueue = repository.getAllQueuedInstalls()
+            .first() // Wait for Room DB to emit (blocks until first emission from Room)
+            .mapNotNull { entity ->
+                // Convert QueuedInstallEntity to InstallTaskState
+                runCatching {
+                    val gameData = repository.getGameByReleaseName(entity.releaseName)
+                    entity.toInstallTaskState(mapOf(entity.releaseName to (gameData ?: return@mapNotNull null)))
+                }.getOrElse {
+                    Log.e(TAG, "Failed to convert entity during resume: ${entity.releaseName}", it)
+                    null
+                }
+            }
+
+        // Handle zombie states first (EXTRACTING/INSTALLING stuck after app kill)
+        // CRITICAL: Reset ALL zombies to QUEUED to ensure sequential processing via queue processor
+        // This prevents the concurrency bug where multiple zombies could trigger parallel extractions
+        val zombieTasks = activeQueue.filter {
+            it.status == InstallTaskStatus.EXTRACTING || it.status == InstallTaskStatus.INSTALLING
+        }
+
+        if (zombieTasks.isNotEmpty()) {
+            Log.w(TAG, "Found ${zombieTasks.size} zombie task(s) stuck in EXTRACTING/INSTALLING state - resetting to QUEUED")
+            for (task in zombieTasks) {
+                handleZombieTaskRecovery(task)
+            }
+        }
+
+        // Now handle downloading/queued tasks
+        val inProgressTasks = activeQueue.filter {
+            it.status == InstallTaskStatus.DOWNLOADING || it.status == InstallTaskStatus.QUEUED
+        }
+
+        if (inProgressTasks.isEmpty() && zombieTasks.isEmpty()) {
+            Log.d(TAG, "No in-progress downloads to resume observation for")
+            return
+        }
+
+        Log.i(TAG, "Resuming observation for ${inProgressTasks.size} active download(s)")
+
+        for (task in inProgressTasks) {
+            // Check if WorkManager has an active work for this task
+            val isWorkActive = repository.isDownloadWorkActive(task.releaseName)
+
+            if (isWorkActive) {
+                // Resume observation of this work
+                Log.d(TAG, "Resuming observation for: ${task.releaseName}")
+                observeDownloadWork(task.releaseName, task.gameName)
+            } else {
+                // Work not found in WorkManager - either completed/failed while app was dead
+                // or was never enqueued. Check Room DB status and decide action.
+                Log.d(TAG, "No active work found for: ${task.releaseName}, re-enqueueing")
+
+                if (task.status == InstallTaskStatus.DOWNLOADING) {
+                    // Was downloading but work is gone - reset to QUEUED and restart
+                    repository.updateQueueStatus(task.releaseName, com.vrpirates.rookieonquest.data.InstallStatus.QUEUED)
+                }
+            }
+        }
+
+        // Start queue processor to pick up any QUEUED tasks (including reset zombies)
+        startQueueProcessor()
+    }
+
+    /**
+     * Handles recovery of a zombie task (EXTRACTING/INSTALLING state after app kill).
+     *
+     * CRITICAL: ALL zombie tasks are reset to QUEUED to ensure sequential processing.
+     * This prevents the concurrency bug where multiple zombies could trigger parallel extractions.
+     *
+     * The queue processor will pick up QUEUED tasks one at a time and:
+     * - For tasks with staged APK in externalFilesDir: Skip extraction, proceed to installation
+     * - For tasks with completed extraction: Skip download and proceed to installation
+     * - For tasks without extraction: Full restart via WorkManager
+     *
+     * Enhanced: Checks for staged APK in externalFilesDir to skip extraction phase entirely.
+     */
+    private suspend fun handleZombieTaskRecovery(task: InstallTaskState) = withContext(Dispatchers.IO) {
+        val context = getApplication<Application>()
+        val tempInstallRoot = File(context.filesDir, "install_temp")
+        val externalFilesDir = context.getExternalFilesDir(null)
+
+        // Compute hash for temp directory (matches MainRepository logic)
+        val hash = com.vrpirates.rookieonquest.data.CryptoUtils.md5(task.releaseName + "\n")
+        val gameTempDir = File(tempInstallRoot, hash)
+        val extractionMarker = File(gameTempDir, "extraction_done.marker")
+        val extractionDir = File(gameTempDir, "extracted")
+
+        // Check for staged APK in externalFilesDir (already extracted and ready for install)
+        // Uses packageName.apk naming convention to prevent cross-contamination between installation tasks
+        // Validates file size and APK integrity (including package name match) using repository helper
+        val stagedApk = repository.getValidStagedApk(task.packageName)
+
+        // Log recovery state for debugging
+        when {
+            stagedApk != null -> {
+                Log.i(TAG, "Zombie recovery: staged APK found (${stagedApk.name}) for ${task.releaseName}, will launch installer directly")
+            }
+            extractionMarker.exists() && extractionDir.exists() -> {
+                Log.i(TAG, "Zombie recovery: extraction complete for ${task.releaseName}, will resume at installation phase")
+            }
+            gameTempDir.exists() && gameTempDir.listFiles()?.isNotEmpty() == true -> {
+                Log.i(TAG, "Zombie recovery: partial download found for ${task.releaseName}, will resume download")
+            }
+            else -> {
+                Log.i(TAG, "Zombie recovery: no recoverable state for ${task.releaseName}, full restart")
+            }
+        }
+
+        // ALWAYS reset to QUEUED - queue processor handles sequential execution
+        // This fixes the concurrency bug where multiple handleDownloadSuccess() calls
+        // could run in parallel if we called it directly here
+        repository.updateQueueStatus(task.releaseName, com.vrpirates.rookieonquest.data.InstallStatus.QUEUED)
     }
 
     fun toggleFavorite(releaseName: String, isFavorite: Boolean) {
@@ -914,7 +1106,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         return missing
     }
-    
+
     fun setSearchQuery(query: String) {
         _searchQuery.value = query
         priorityUpdateChannel.trySend(Unit)
@@ -1005,6 +1197,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isDownloadOnly = downloadOnly
                 )
 
+                // CRITICAL: Signal that a task was added AFTER Room insert completes.
+                // This solves the race condition where startQueueProcessor() would check
+                // installQueue.value before the StateFlow had emitted the new task.
+                taskAddedSignal.trySend(Unit)
+
                 val isShowing = _showInstallOverlay.value
                 val alreadyProcessing = installQueue.value.any { it.status.isProcessing() }
 
@@ -1019,7 +1216,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _events.emit(MainEvent.ShowMessage("Failed to add ${game.gameName} to queue"))
             }
         }
-        
+
         startQueueProcessor()
     }
 
@@ -1037,22 +1234,81 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Starts the queue processor that sequentially processes QUEUED tasks.
+     *
+     * FIX for race condition (Story 1.10):
+     * The previous implementation would immediately exit if no QUEUED tasks were found
+     * in installQueue.value. This caused a race condition because:
+     * 1. installGame() inserts task to Room DB (async)
+     * 2. startQueueProcessor() called immediately after
+     * 3. installQueue.value hasn't emitted the new task yet (StateFlow delay from Room)
+     * 4. Processor exits thinking there's no work to do
+     *
+     * Solution: Use taskAddedSignal channel to wait for task insertion confirmation
+     * before exiting. The processor now waits for either:
+     * - A task to appear in the StateFlow, OR
+     * - A signal that a task was added (so it should recheck the StateFlow)
+     * - A timeout (to avoid indefinite waiting if something goes wrong)
+     */
     private fun startQueueProcessor() {
         if (queueProcessorJob?.isActive == true) return
-        
+
         queueProcessorJob = viewModelScope.launch {
             try {
                 while (isActive) {
                     val nextTask = installQueue.value.find { it.status == InstallTaskStatus.QUEUED }
-                    if (nextTask == null) {
-                        if (installQueue.value.none { it.status == InstallTaskStatus.QUEUED }) {
-                            break 
-                        }
-                        delay(1000)
-                        continue
-                    }
 
-                    runTask(nextTask)
+                    if (nextTask != null) {
+                        // Task found - process it
+                        runTask(nextTask)
+                    } else {
+                        // No QUEUED task found in StateFlow.
+                        // This could be because:
+                        // 1. Queue is genuinely empty → should exit
+                        // 2. Room insert completed but StateFlow hasn't emitted yet → wait for signal
+                        // 3. All tasks are in non-QUEUED states (PAUSED, etc.) → should exit
+
+                        // Wait for either:
+                        // - taskAddedSignal (new task was inserted)
+                        // - timeout (to recheck or exit if genuinely empty)
+                        val signalReceived = select<Boolean> {
+                            taskAddedSignal.onReceive { true }
+                            onTimeout(500.milliseconds) { false }
+                        }
+
+                        if (signalReceived) {
+                            // Signal received - a task was just added. Wait for StateFlow to emit
+                            // the new task before rechecking. This is more reactive than a fixed delay.
+                            //
+                            // REACTIVE WAIT: Use withTimeoutOrNull(200) with installQueue.first()
+                            // to wait for QUEUED tasks to appear. If they appear within 200ms, proceed
+                            // immediately. Otherwise, loop back and recheck (handles edge cases).
+                            //
+                            // 200ms timeout is conservative - actual StateFlow propagation is typically <50ms.
+                            // The timeout prevents indefinite waiting if something goes wrong.
+                            val taskAppeared = withTimeoutOrNull(200) {
+                                installQueue.first { it.any { t -> t.status == InstallTaskStatus.QUEUED } }
+                                true
+                            } ?: false
+
+                            if (taskAppeared) {
+                                // Task appeared in StateFlow - proceed to process it
+                                continue
+                            }
+                            // Timeout without task appearing - loop back and recheck queue state
+                            continue
+                        }
+
+                        // Timeout - recheck the queue
+                        val hasQueuedTasks = installQueue.value.any { it.status == InstallTaskStatus.QUEUED }
+                        if (!hasQueuedTasks) {
+                            // No QUEUED tasks after waiting - genuinely empty, exit processor
+                            Log.d(TAG, "Queue processor: No QUEUED tasks found, exiting")
+                            break
+                        }
+                        // else: There are QUEUED tasks, loop back and process them
+                    }
                 }
             } finally {
                 queueProcessorJob = null
@@ -1060,9 +1316,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Runs a download task using WorkManager for background execution.
+     * WorkManager ensures the download survives app kill and device reboot.
+     * Progress and status updates flow from DownloadWorker → Room DB → StateFlow → UI.
+     *
+     * CRITICAL: This function suspends until the ENTIRE pipeline completes (download + extraction + installation).
+     * This prevents the queue processor from starting the next task while extraction is in progress,
+     * which would cause concurrent I/O operations and violate the sequential queue contract.
+     *
+     * OPTIMIZATION: If extraction is already complete (zombie recovery case),
+     * skip WorkManager entirely and proceed directly to installation.
+     *
+     * NOTE ON FILE EXISTENCE CHECKS:
+     * The file checks here (stagedApk, extractionMarker, extractionDir) are NOT redundant with
+     * handleZombieTaskRecovery() because:
+     * 1. handleZombieTaskRecovery() only runs at app startup (in resumeActiveDownloadObservations)
+     * 2. runTask() is called for BOTH zombie-recovered tasks AND fresh new tasks
+     * 3. A task could be added while the app is running, then the app is killed during extraction,
+     *    then the app restarts and processes the task again - these checks handle that case
+     * 4. These checks enable smart resumption at the furthest completed stage
+     */
     private suspend fun runTask(task: InstallTaskState) {
         val game = _allGames.value.find { it.releaseName == task.releaseName } ?: return
-        
+
         // Double check status hasn't changed to PAUSED before we start
         val latestTask = installQueue.value.find { it.releaseName == task.releaseName }
         if (latestTask == null || latestTask.status != InstallTaskStatus.QUEUED) return
@@ -1073,89 +1350,372 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _viewedReleaseName.value = task.releaseName
         }
 
-        // Initialize active task state before updating status to ensure UI pause/cancel works immediately
+        // Initialize active task state before enqueuing work
         activeReleaseName = task.releaseName
-        val taskJob = SupervisorJob(coroutineContext[Job])
-        currentTaskJob = taskJob
 
-        updateTaskStatus(task.releaseName, InstallTaskStatus.DOWNLOADING)
-        
+        // Create task-specific completion signal - will be completed when extraction/installation finishes
+        // This ensures the queue processor waits for the FULL pipeline before starting next task
+        val completionSignal = CompletableDeferred<Unit>()
+        taskCompletionSignals[task.releaseName] = completionSignal
+
+        // Check if installation can be resumed from various recovery points
+        // Use withContext(Dispatchers.IO) to avoid blocking main thread with file I/O
+        val context = getApplication<Application>()
+        val recoveryState = withContext(Dispatchers.IO) {
+            val tempInstallRoot = File(context.filesDir, "install_temp")
+            val hash = com.vrpirates.rookieonquest.data.CryptoUtils.md5(task.releaseName + "\n")
+            val gameTempDir = File(tempInstallRoot, hash)
+            val extractionMarker = File(gameTempDir, "extraction_done.marker")
+            val extractionDir = File(gameTempDir, "extracted")
+
+            // Check for staged APK in externalFilesDir (ready for install, extraction already done)
+            // Uses packageName.apk naming convention to prevent cross-contamination between installation tasks
+            // Validates APK integrity (including package name match) using repository helper
+            val stagedApk = repository.getValidStagedApk(task.packageName)
+
+            Triple(stagedApk, extractionMarker.exists() && extractionDir.exists(), gameTempDir)
+        }
+        val (stagedApk, isExtractionComplete, _) = recoveryState
+
+        if (stagedApk != null) {
+            // APK is already staged - skip extraction entirely, go directly to APK install
+            Log.i(TAG, "Staged APK found for ${task.releaseName}, launching installer directly")
+            updateTaskStatus(task.releaseName, InstallTaskStatus.INSTALLING)
+            _events.emit(MainEvent.InstallApk(stagedApk))
+            updateTaskStatus(task.releaseName, InstallTaskStatus.COMPLETED)
+            delay(2000)
+            repository.removeFromQueue(task.releaseName)
+            progressThrottleMap.remove(task.releaseName)
+            totalBytesWrittenSet.remove(task.releaseName)
+            updateOverlayAfterTaskComplete(task.releaseName)
+            refreshInstalledPackages()
+            taskCompletionSignals[task.releaseName]?.complete(Unit)
+            taskCompletionSignals.remove(task.releaseName)
+            return
+        }
+
+        if (isExtractionComplete) {
+            // Extraction already complete - skip WorkManager and go directly to installation
+            Log.i(TAG, "Extraction already complete for ${task.releaseName}, skipping to installation")
+            handleDownloadSuccess(task.releaseName, task.gameName)
+            // Wait for extraction/installation to complete before returning
+            taskCompletionSignals[task.releaseName]?.await()
+            return
+        }
+
+        Log.i(TAG, "Enqueueing WorkManager download for: ${task.releaseName}")
+
+        // Enqueue download via WorkManager - survives process death
+        repository.enqueueDownload(
+            releaseName = task.releaseName,
+            isDownloadOnly = task.isDownloadOnly,
+            keepApk = _keepApks.value
+        )
+
+        // Observe WorkManager status and sync with our UI/queue state
+        observeDownloadWork(task.releaseName, task.gameName)
+
+        // CRITICAL: Wait for the FULL pipeline to complete (download + extraction + installation)
+        // This prevents the queue processor from starting the next task prematurely
+        //
+        // Adaptive timeout calculation:
+        // - Base: 5 minutes minimum (for small games and overhead)
+        // - Scale: 1 minute per 500 MB (accounts for download + extraction)
+        // - Cap: 2 hours maximum (for very large games)
+        val fileSizeMb = task.totalBytes / (1024 * 1024)
+        val baseTimeoutMinutes = 5L
+        val scaledMinutes = fileSizeMb / 500 // 1 minute per 500 MB
+        val timeoutMinutes = (baseTimeoutMinutes + scaledMinutes).coerceIn(5, 120)
+        val timeoutMs = timeoutMinutes * 60 * 1000L
+
+        Log.d(TAG, "Task timeout for ${task.releaseName}: ${timeoutMinutes}min (size: ${fileSizeMb}MB)")
+
         try {
-            withContext(taskJob + Dispatchers.IO) {
-                val apkFile = repository.installGame(
-                    game = game,
-                    keepApk = _keepApks.value,
-                    downloadOnly = task.isDownloadOnly
-                ) { message, progress, current, total ->
-                    updateTaskProgress(task.releaseName, message, progress, current, total)
-                }
-                
-                updateTaskStatus(task.releaseName, InstallTaskStatus.COMPLETED)
-                refreshDownloadedReleases()
+            withTimeoutOrNull(timeoutMs) {
+                taskCompletionSignals[task.releaseName]?.await()
+            } ?: run {
+                // Timeout reached - worker likely failed silently
+                Log.e(TAG, "Task completion timeout for ${task.releaseName} after ${timeoutMinutes}min - marking as FAILED")
+                updateTaskStatus(task.releaseName, InstallTaskStatus.FAILED)
+                _events.emit(MainEvent.ShowMessage("Installation timed out for ${task.gameName}"))
+                taskCompletionSignals.remove(task.releaseName)
+            }
+        } catch (e: CancellationException) {
+            // Task was cancelled (pause/cancel) - propagate cancellation
+            Log.d(TAG, "Task completion signal cancelled for ${task.releaseName}")
+            taskCompletionSignals.remove(task.releaseName)
+            throw e
+        }
+    }
 
-                // Proactively clean up temp files immediately after success to free disk space
-                repository.cleanupInstall(task.releaseName, task.totalBytes)
+    /**
+     * Observes WorkManager work status and handles completion/failure.
+     * Room DB updates from DownloadWorker propagate to UI via existing StateFlow.
+     * This method handles post-completion cleanup and APK installation trigger.
+     *
+     * CONCURRENCY FIX: Manages observer Jobs in downloadObserverJobs map to prevent
+     * coroutine accumulation. If an observer already exists for this releaseName,
+     * it's cancelled before starting a new one. Jobs are cleaned up on terminal states.
+     */
+    private fun observeDownloadWork(releaseName: String, gameName: String) {
+        // Cancel any existing observer for this releaseName to prevent accumulation
+        downloadObserverJobs[releaseName]?.cancel()
 
-                if (apkFile != null && !task.isDownloadOnly) {
-                    withContext(Dispatchers.Main) {
-                        if (!_isAppVisible.value) {
-                            _isAppVisible.first { it }
+        val job = viewModelScope.launch {
+            repository.getDownloadWorkInfoFlow(releaseName)
+                .collect { workInfoList ->
+                    val workInfo = workInfoList.firstOrNull() ?: return@collect
+
+                    when (workInfo.state) {
+                        WorkInfo.State.ENQUEUED -> {
+                            Log.d(TAG, "Work ENQUEUED: $releaseName (constraints not met)")
                         }
-                        _events.emit(MainEvent.InstallApk(apkFile))
+                        WorkInfo.State.RUNNING -> {
+                            Log.d(TAG, "Work RUNNING: $releaseName")
+                        }
+                        WorkInfo.State.SUCCEEDED -> {
+                            Log.i(TAG, "Work SUCCEEDED: $releaseName")
+                            handleDownloadSuccess(releaseName, gameName)
+                        }
+                        WorkInfo.State.FAILED -> {
+                            val errorMessage = workInfo.outputData.getString(
+                                DownloadWorker.KEY_STATUS
+                            ) ?: "Download failed"
+                            Log.e(TAG, "Work FAILED: $releaseName - $errorMessage")
+                            handleDownloadFailure(releaseName, gameName, errorMessage)
+                            // Signal completion so queue processor can continue to next task
+                            taskCompletionSignals[releaseName]?.complete(Unit)
+                            taskCompletionSignals.remove(releaseName)
+                        }
+                        WorkInfo.State.CANCELLED -> {
+                            Log.d(TAG, "Work CANCELLED: $releaseName")
+                            // Status already updated to PAUSED by pauseInstall() or cancelInstall()
+                            // Signal cancellation so queue processor can handle it
+                            taskCompletionSignals[releaseName]?.cancel()
+                            taskCompletionSignals.remove(releaseName)
+                        }
+                        WorkInfo.State.BLOCKED -> {
+                            Log.d(TAG, "Work BLOCKED: $releaseName")
+                        }
+                    }
+
+                    // Terminal state - stop observing and clean up
+                    if (workInfo.state.isFinished) {
+                        // Clear active task state if it's still this task
+                        if (activeReleaseName == releaseName) {
+                            activeReleaseName = null
+                        }
+                        // Remove from observer jobs map to allow garbage collection
+                        downloadObserverJobs.remove(releaseName)
+                        return@collect
                     }
                 }
-            }
-            
-            delay(2000)
-            // Remove completed task from Room DB
-            viewModelScope.launch {
-                try {
-                    repository.removeFromQueue(task.releaseName)
-                    progressThrottleMap.remove(task.releaseName) // Clean up throttling state
-                    totalBytesWrittenSet.remove(task.releaseName) // Clean up totalBytes tracking
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to remove completed task from DB", e)
-                }
-            }
-            
-            if (installQueue.value.isEmpty()) {
-                _showInstallOverlay.value = false
-                _viewedReleaseName.value = null
-            } else if (_viewedReleaseName.value == task.releaseName) {
-                val remaining = installQueue.value
-                val nextActive = remaining.find { it.status.isProcessing() }
-                _viewedReleaseName.value = nextActive?.releaseName ?: remaining.firstOrNull()?.releaseName
-            }
+        }
 
-        } catch (e: Exception) {
-            if (e is CancellationException) {
-                Log.d(TAG, "Task cancelled/paused: ${task.gameName}")
-                // Do not remove from queue, status is already set to PAUSED by pauseInstall()
-                // Throttle map cleanup is handled by pauseInstall() or cancelInstall()
+        // Store the job in the map for lifecycle management
+        downloadObserverJobs[releaseName] = job
+    }
+
+    private suspend fun handleDownloadSuccess(releaseName: String, gameName: String) {
+        refreshDownloadedReleases()
+
+        val task = installQueue.value.find { it.releaseName == releaseName }
+        val game = _allGames.value.find { it.releaseName == releaseName }
+
+        // Helper function to signal task completion (allows queue processor to continue)
+        fun signalTaskComplete() {
+            taskCompletionSignals[releaseName]?.complete(Unit)
+            taskCompletionSignals.remove(releaseName)
+        }
+
+        // If download-only mode, move files from temp cache to public Downloads folder
+        if (task?.isDownloadOnly == true) {
+            Log.i(TAG, "Download-only mode: moving files to Downloads for $releaseName")
+
+            if (game != null) {
+                // Update status to show we're finalizing
+                updateTaskStatus(releaseName, InstallTaskStatus.EXTRACTING)
+
+                currentTaskJob = viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        // Use installGame with downloadOnly=true to move files to Downloads folder
+                        // This handles extraction, saving to Downloads, and proper cleanup
+                        repository.installGame(
+                            game = game,
+                            keepApk = _keepApks.value,
+                            downloadOnly = true, // Moves to Downloads without launching installer
+                            skipRemoteVerification = true // Files already verified by WorkManager
+                        ) { message, progress, current, total ->
+                            // The repository already scales progress (0-0.8 download, 0.8-1.0 extraction)
+                            // So we use it directly instead of re-scaling which would cause jumps
+                            updateTaskProgress(releaseName, message, progress, current, total)
+                        }
+
+                        updateTaskStatus(releaseName, InstallTaskStatus.COMPLETED)
+                        delay(1000)
+
+                        // Remove completed task from Room DB
+                        repository.removeFromQueue(releaseName)
+                        progressThrottleMap.remove(releaseName)
+                        totalBytesWrittenSet.remove(releaseName)
+
+                        withContext(Dispatchers.Main) {
+                            updateOverlayAfterTaskComplete(releaseName)
+                            refreshDownloadedReleases()
+                        }
+
+                    } catch (e: CancellationException) {
+                        Log.d(TAG, "Download-only finalization cancelled for $releaseName")
+                        updateTaskStatus(releaseName, InstallTaskStatus.PAUSED)
+                        // Signal cancellation so queue processor can handle it
+                        taskCompletionSignals[releaseName]?.cancel()
+                        taskCompletionSignals.remove(releaseName)
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Download-only finalization failed for $releaseName", e)
+                        updateTaskStatus(releaseName, InstallTaskStatus.FAILED)
+                        withContext(Dispatchers.Main) {
+                            _events.emit(MainEvent.ShowMessage("Failed to save download: ${e.message}"))
+                        }
+                    } finally {
+                        if (activeReleaseName == releaseName) {
+                            activeReleaseName = null
+                        }
+                        // CRITICAL: Signal task completion to allow queue processor to continue
+                        signalTaskComplete()
+                    }
+                }
             } else {
-                val errorMessage = e.message ?: "Unknown error"
-                Log.e(TAG, "Installation failed for ${task.gameName}", e)
+                Log.e(TAG, "Game not found for download-only: $releaseName")
+                // Fallback: just clean up the task
+                try {
+                    repository.removeFromQueue(releaseName)
+                    progressThrottleMap.remove(releaseName)
+                    totalBytesWrittenSet.remove(releaseName)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to remove task from DB", e)
+                }
+                updateOverlayAfterTaskComplete(releaseName)
+                signalTaskComplete()
+            }
+            return
+        }
 
-                // Ensure the status is updated to FAILED so the UI shows it
-                updateTaskStatus(task.releaseName, InstallTaskStatus.FAILED, errorMessage)
+        // Full install mode: trigger extraction and installation via legacy flow
+        if (game != null) {
+            Log.i(TAG, "Download complete, starting extraction/installation for: $releaseName")
 
-                // Clean up throttle map on failure to prevent memory leak
-                progressThrottleMap.remove(task.releaseName)
+            // Update status to EXTRACTING before starting
+            updateTaskStatus(releaseName, InstallTaskStatus.EXTRACTING)
 
-                // Specific handling for storage space to pause other tasks if needed or show prominent popup
-                if (errorMessage.contains("Insufficient storage space", ignoreCase = true)) {
-                    _events.emit(MainEvent.ShowMessage("STORAGE ERROR: $errorMessage"))
-                } else {
-                    _events.emit(MainEvent.ShowMessage("Failed to install ${task.gameName}: $errorMessage"))
+            // Run extraction and installation logic (skip remote verification since WorkManager already downloaded)
+            currentTaskJob = viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val apkFile = repository.installGame(
+                        game = game,
+                        keepApk = _keepApks.value,
+                        downloadOnly = false,
+                        skipRemoteVerification = true // Skip HEAD requests - files already verified by WorkManager
+                    ) { message, progress, current, total ->
+                        // The repository already scales progress (0-0.8 download, 0.8-1.0 extraction)
+                        // So we use it directly instead of re-scaling which would cause jumps
+                        val adjustedProgress = progress
+
+                        // Determine status from message
+                        val status = when {
+                            message.contains("Extract", ignoreCase = true) -> InstallTaskStatus.EXTRACTING
+                            message.contains("Installing", ignoreCase = true) -> InstallTaskStatus.INSTALLING
+                            message.contains("OBB", ignoreCase = true) -> InstallTaskStatus.INSTALLING
+                            message.contains("Launching", ignoreCase = true) -> InstallTaskStatus.INSTALLING
+                            else -> InstallTaskStatus.EXTRACTING
+                        }
+
+                        updateTaskProgress(releaseName, message, adjustedProgress, current, total)
+
+                        // Update status if changed
+                        val currentTask = installQueue.value.find { it.releaseName == releaseName }
+                        if (currentTask?.status != status) {
+                            updateTaskStatus(releaseName, status)
+                        }
+                    }
+
+                    // APK is ready for installation
+                    if (apkFile != null && apkFile.exists()) {
+                        Log.i(TAG, "APK ready for installation: ${apkFile.absolutePath}")
+                        withContext(Dispatchers.Main) {
+                            _events.emit(MainEvent.InstallApk(apkFile))
+                        }
+                    }
+
+                    // Mark as completed and clean up
+                    updateTaskStatus(releaseName, InstallTaskStatus.COMPLETED)
+
+                    delay(2000)
+
+                    // Now clean up temp files (after successful installation trigger)
+                    if (task != null) {
+                        repository.cleanupInstall(releaseName, task.totalBytes)
+                    }
+
+                    // Remove completed task from Room DB
+                    repository.removeFromQueue(releaseName)
+                    progressThrottleMap.remove(releaseName)
+                    totalBytesWrittenSet.remove(releaseName)
+
+                    withContext(Dispatchers.Main) {
+                        updateOverlayAfterTaskComplete(releaseName)
+                        refreshInstalledPackages()
+                    }
+
+                } catch (e: CancellationException) {
+                    Log.d(TAG, "Installation cancelled for $releaseName")
+                    updateTaskStatus(releaseName, InstallTaskStatus.PAUSED)
+                    // Signal cancellation so queue processor can handle it
+                    taskCompletionSignals[releaseName]?.cancel()
+                    taskCompletionSignals.remove(releaseName)
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Installation failed for $releaseName", e)
+                    updateTaskStatus(releaseName, InstallTaskStatus.FAILED)
+                    withContext(Dispatchers.Main) {
+                        _events.emit(MainEvent.ShowMessage("Installation failed: ${e.message}"))
+                    }
+                } finally {
+                    if (activeReleaseName == releaseName) {
+                        activeReleaseName = null
+                    }
+                    // CRITICAL: Signal task completion to allow queue processor to continue
+                    signalTaskComplete()
                 }
             }
-        } finally {
-            // Only clear shared state if it still belongs to this task (prevents race conditions with promoted tasks)
-            if (activeReleaseName == task.releaseName) {
-                activeReleaseName = null
-                currentTaskJob = null
-            }
-            taskJob.cancel() 
+        } else {
+            Log.e(TAG, "Game not found in catalog for installation: $releaseName")
+            updateTaskStatus(releaseName, InstallTaskStatus.FAILED)
+            _events.emit(MainEvent.ShowMessage("Installation failed: Game not found in catalog"))
+            signalTaskComplete()
+        }
+    }
+
+    private fun updateOverlayAfterTaskComplete(releaseName: String) {
+        // Update overlay view
+        if (installQueue.value.isEmpty()) {
+            _showInstallOverlay.value = false
+            _viewedReleaseName.value = null
+        } else if (_viewedReleaseName.value == releaseName) {
+            val remaining = installQueue.value
+            val nextActive = remaining.find { it.status.isProcessing() }
+            _viewedReleaseName.value = nextActive?.releaseName ?: remaining.firstOrNull()?.releaseName
+        }
+    }
+
+    private suspend fun handleDownloadFailure(releaseName: String, gameName: String, errorMessage: String) {
+        // Status already updated by DownloadWorker
+        progressThrottleMap.remove(releaseName)
+
+        if (errorMessage.contains("Insufficient storage space", ignoreCase = true)) {
+            _events.emit(MainEvent.ShowMessage("STORAGE ERROR: $errorMessage"))
+        } else {
+            _events.emit(MainEvent.ShowMessage("Failed to download $gameName: $errorMessage"))
         }
     }
 
@@ -1191,7 +1751,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Throttling state for DB progress updates (NOT for status - see updateTaskStatus doc)
     private val progressThrottleMap = mutableMapOf<String, Long>()
-    private val PROGRESS_THROTTLE_MS = 500L // Update DB max once every 500ms
 
     // Tracks tasks where totalBytes has already been written to DB (optimization to avoid redundant writes)
     private val totalBytesWrittenSet = mutableSetOf<String>()
@@ -1208,7 +1767,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Check throttle BEFORE launching coroutine to avoid memory pressure
         val now = System.currentTimeMillis()
         val lastUpdate = progressThrottleMap[releaseName] ?: 0L
-        val shouldUpdate = (now - lastUpdate) >= PROGRESS_THROTTLE_MS || progress >= 1.0f
+        val shouldUpdate = (now - lastUpdate) >= com.vrpirates.rookieonquest.data.Constants.PROGRESS_THROTTLE_MS || progress >= 1.0f
 
         if (!shouldUpdate) return // Early exit - no coroutine launched
 
@@ -1245,8 +1804,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             updateTaskStatus(releaseName, InstallTaskStatus.PAUSED)
             progressThrottleMap.remove(releaseName) // Clean up throttling state on pause
             totalBytesWrittenSet.remove(releaseName) // Reset so totalBytes is written on resume
+
+            // Cancel WorkManager work
+            repository.cancelDownloadWork(releaseName)
+
+            // Clean up observer job immediately (don't wait for WorkInfo terminal state)
+            downloadObserverJobs[releaseName]?.cancel()
+            downloadObserverJobs.remove(releaseName)
+
+            // Clean up completion signal
+            taskCompletionSignals[releaseName]?.cancel()
+            taskCompletionSignals.remove(releaseName)
+
             if (releaseName == activeReleaseName) {
                 currentTaskJob?.cancel()
+                activeReleaseName = null
             }
         }
     }
@@ -1263,9 +1835,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelInstall(releaseName: String) {
         val task = installQueue.value.find { it.releaseName == releaseName } ?: return
-        
+
+        // Cancel WorkManager work first
+        repository.cancelDownloadWork(releaseName)
+
+        // Clean up observer job immediately (don't wait for WorkInfo terminal state)
+        downloadObserverJobs[releaseName]?.cancel()
+        downloadObserverJobs.remove(releaseName)
+
+        // Clean up completion signal
+        taskCompletionSignals[releaseName]?.cancel()
+        taskCompletionSignals.remove(releaseName)
+
         if (releaseName == activeReleaseName) {
             currentTaskJob?.cancel()
+            activeReleaseName = null
         }
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -1275,7 +1859,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             progressThrottleMap.remove(releaseName) // Clean up throttling state
             totalBytesWrittenSet.remove(releaseName) // Clean up totalBytes tracking
         }
-        
+
         val remaining = installQueue.value
         if (_viewedReleaseName.value == releaseName) {
             _viewedReleaseName.value = remaining.find { it.status.isProcessing() }?.releaseName
@@ -1300,6 +1884,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val previousActive = activeReleaseName
             if (previousActive != null && previousActive != releaseName) {
                 updateTaskStatus(previousActive, InstallTaskStatus.PAUSED)
+                // Cancel WorkManager work for previous active task
+                repository.cancelDownloadWork(previousActive)
                 currentTaskJob?.cancel()
             }
 
@@ -1401,4 +1987,5 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
         return String.format(Locale.US, "%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
     }
+
 }
