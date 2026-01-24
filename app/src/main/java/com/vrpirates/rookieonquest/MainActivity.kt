@@ -110,6 +110,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     var showUpdateDialogState by remember { mutableStateOf<com.vrpirates.rookieonquest.network.GitHubRelease?>(null) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var gameToDelete by remember { mutableStateOf<GameItemState?>(null) }
+    var taskToCancel by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(listState, staggeredGridState) {
         snapshotFlow { 
@@ -375,7 +376,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                     queue = installQueue,
                     viewedReleaseName = taskToShow.releaseName,
                     onTaskClick = { viewModel.setFocusedTask(it) },
-                    onCancel = { viewModel.cancelInstall(it) },
+                    onCancel = { taskToCancel = it },
                     onPause = { viewModel.pauseInstall(it) },
                     onResume = { viewModel.resumeInstall(it) },
                     onPromote = { viewModel.promoteTask(it) },
@@ -414,6 +415,33 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 dismissButton = {
                     TextButton(onClick = { gameToDelete = null }) {
                         Text("CANCEL")
+                    }
+                },
+                containerColor = Color(0xFF1E1E1E),
+                shape = RoundedCornerShape(24.dp)
+            )
+        }
+
+        if (taskToCancel != null) {
+            val taskName = installQueue.find { it.releaseName == taskToCancel }?.gameName ?: taskToCancel
+            AlertDialog(
+                onDismissRequest = { taskToCancel = null },
+                title = { Text("Cancel Download?") },
+                text = { Text("Are you sure you want to cancel the download of $taskName? This will delete any partially downloaded files.") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            taskToCancel?.let { viewModel.cancelInstall(it) }
+                            taskToCancel = null
+                        },
+                        colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFCF6679))
+                    ) {
+                        Text("CANCEL DOWNLOAD", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { taskToCancel = null }) {
+                        Text("KEEP")
                     }
                 },
                 containerColor = Color(0xFF1E1E1E),
@@ -1275,91 +1303,154 @@ fun QueueManagerOverlay(
                     Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
                 }
             }
-            
+
             Spacer(modifier = Modifier.height(24.dp))
-            
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(queue, key = { it.releaseName }) { task ->
-                    val isViewed = task.releaseName == viewedReleaseName
-                    val isProcessing = task.status.isProcessing()
-                    val isPaused = task.status == InstallTaskStatus.PAUSED
-                    
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onTaskClick(task.releaseName) },
-                        color = if (isViewed) Color.White.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.05f),
-                        shape = RoundedCornerShape(16.dp),
-                        border = if (isViewed) BorderStroke(1.dp, MaterialTheme.colorScheme.secondary) else null
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = task.gameName,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = task.message ?: task.status.name,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = if (task.status == InstallTaskStatus.FAILED) Color(0xFFCF6679) else Color.Gray
-                                    )
-                                }
-                                
+
+            if (queue.isEmpty()) {
+                // Empty state
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            Icons.Default.CloudDownload,
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = Color.Gray
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            "No downloads in queue",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.Gray
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "Browse the catalog and tap Install to add games",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray.copy(alpha = 0.7f),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(queue.size, key = { queue[it].releaseName }) { index ->
+                        val task = queue[index]
+                        val position = index + 1
+                        val isViewed = task.releaseName == viewedReleaseName
+                        val isProcessing = task.status.isProcessing()
+                        val isPaused = task.status == InstallTaskStatus.PAUSED
+                        val isFailed = task.status == InstallTaskStatus.FAILED
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onTaskClick(task.releaseName) },
+                            color = if (isViewed) Color.White.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.05f),
+                            shape = RoundedCornerShape(16.dp),
+                            border = if (isViewed) BorderStroke(1.dp, MaterialTheme.colorScheme.secondary) else null
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (!isProcessing && (task.status == InstallTaskStatus.QUEUED || isPaused || task.status == InstallTaskStatus.FAILED)) {
-                                        IconButton(onClick = { onPromote(task.releaseName) }) {
-                                            Icon(Icons.Default.VerticalAlignTop, contentDescription = "Prioritize", tint = MaterialTheme.colorScheme.secondary)
+                                    // Position indicator badge
+                                    Surface(
+                                        color = if (isProcessing) MaterialTheme.colorScheme.secondary else Color.White.copy(alpha = 0.2f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                            Text(
+                                                "#$position",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = if (isProcessing) Color.Black else Color.White,
+                                                fontWeight = FontWeight.Bold
+                                            )
                                         }
                                     }
-                                    
-                                    if (isProcessing) {
-                                        IconButton(onClick = { onPause(task.releaseName) }) {
-                                            Icon(Icons.Default.Pause, contentDescription = "Pause", tint = Color.White)
-                                        }
-                                    } else if (isPaused || task.status == InstallTaskStatus.FAILED) {
-                                        IconButton(onClick = { onResume(task.releaseName) }) {
-                                            Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = Color(0xFF2ecc71))
-                                        }
+
+                                    Spacer(modifier = Modifier.width(12.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = task.gameName,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = if (isFailed && task.error != null) task.error else (task.message ?: task.status.name),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (isFailed) Color(0xFFCF6679) else Color.Gray,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
-                                    
-                                    IconButton(onClick = { onCancel(task.releaseName) }) {
-                                        Icon(Icons.Default.Delete, contentDescription = "Cancel", tint = Color(0xFFCF6679))
+
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        // Promote button - only show if not first and not actively processing
+                                        if (position > 1 && !isProcessing) {
+                                            IconButton(onClick = { onPromote(task.releaseName) }) {
+                                                Icon(Icons.Default.VerticalAlignTop, contentDescription = "Prioritize", tint = MaterialTheme.colorScheme.secondary)
+                                            }
+                                        }
+
+                                        // Pause/Resume/Retry button
+                                        if (isProcessing) {
+                                            IconButton(onClick = { onPause(task.releaseName) }) {
+                                                Icon(Icons.Default.Pause, contentDescription = "Pause", tint = Color.White)
+                                            }
+                                        } else if (isFailed) {
+                                            // Distinct Retry icon for failed state
+                                            IconButton(onClick = { onResume(task.releaseName) }) {
+                                                Icon(Icons.Default.Refresh, contentDescription = "Retry", tint = Color(0xFFF39C12))
+                                            }
+                                        } else if (isPaused) {
+                                            IconButton(onClick = { onResume(task.releaseName) }) {
+                                                Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = Color(0xFF2ecc71))
+                                            }
+                                        }
+
+                                        // Cancel button
+                                        IconButton(onClick = { onCancel(task.releaseName) }) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Cancel", tint = Color(0xFFCF6679))
+                                        }
                                     }
                                 }
-                            }
-                            
-                            if (isProcessing || (task.progress > 0 && task.status != InstallTaskStatus.COMPLETED)) {
-                                Spacer(modifier = Modifier.height(12.dp))
-                                LinearProgressIndicator(
-                                    progress = task.progress.coerceIn(0f, 1f),
-                                    modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
-                                    color = if (isPaused) Color.Gray else MaterialTheme.colorScheme.secondary,
-                                    trackColor = Color.White.copy(alpha = 0.1f)
-                                )
-                                if (task.currentSize != null) {
-                                    Text(
-                                        text = "${task.currentSize} / ${task.totalSize}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color.Gray,
-                                        modifier = Modifier.align(Alignment.End).padding(top = 4.dp)
+
+                                if (isProcessing || (task.progress > 0 && task.status != InstallTaskStatus.COMPLETED)) {
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    LinearProgressIndicator(
+                                        progress = task.progress.coerceIn(0f, 1f),
+                                        modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                                        color = if (isPaused) Color.Gray else MaterialTheme.colorScheme.secondary,
+                                        trackColor = Color.White.copy(alpha = 0.1f)
                                     )
+                                    if (task.currentSize != null) {
+                                        Text(
+                                            text = "${task.currentSize} / ${task.totalSize}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color.Gray,
+                                            modifier = Modifier.align(Alignment.End).padding(top = 4.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-            
+
             Spacer(modifier = Modifier.height(16.dp))
-            
+
             Button(
                 onClick = onClose,
                 modifier = Modifier.fillMaxWidth().height(56.dp),
