@@ -141,6 +141,12 @@ object Constants {
      * Copying APK/OBB to Downloads folder in download-only/keep-apk modes.
      */
     const val PROGRESS_MILESTONE_SAVING_TO_DOWNLOADS = 0.92f
+
+    /**
+     * Maximum age for staged APK files (24 hours in milliseconds).
+     * Files older than this are considered stale and eligible for cleanup.
+     */
+    const val STAGED_APK_MAX_AGE_MS = 1000 * 60 * 60 * 24L
 }
 
 /**

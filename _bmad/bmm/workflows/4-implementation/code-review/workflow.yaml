@@ -25,6 +25,10 @@ variables:
   # Project context
   project_context: "**/project-context.md"
   story_dir: "{implementation_artifacts}"
+  story_key: "1-5-http-range-resumption-for-interrupted-downloads"
+  new_status: "in-progress"
+  fixed_count: 0
+  action_count: 4
 
 # Smart input file references - handles both whole docs and sharded docs
 # Priority: Whole document first, then sharded version

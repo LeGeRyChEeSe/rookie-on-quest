@@ -647,7 +647,6 @@ class MainRepository(private val context: Context) {
             //
             // If modifying download logic here, review DownloadWorker.downloadSegment() for consistency.
             val config = cachedConfig ?: throw Exception("Config not loaded")
-            val password = decodedPassword ?: throw Exception("Password not available")
             val sanitizedBase = if (config.baseUri.endsWith("/")) config.baseUri else "${config.baseUri}/"
             val dirUrl = "$sanitizedBase$hash/"
 
@@ -1116,13 +1115,7 @@ class MainRepository(private val context: Context) {
                     if (installedPackages.containsKey(packageName)) {
                         var obbOk = true
                         if (obbRequired) {
-                            // For special data, it's harder to verify without re-parsing install.txt
-                            // but usually if APK is installed, we assume OBB/Data was moved too during the process.
-                            // We do a simple check for standard OBB
-                            val obbDir = File(Environment.getExternalStorageDirectory(), "Android/obb/$packageName")
-                            val standardObbExists = obbDir.exists() && (obbDir.list()?.isNotEmpty() ?: false)
-                            
-                            // If it's not a standard OBB, we just trust the installation was finished if APK is there.
+                            // If it's an archive, we trust the installation was finished if APK is there.
                             // Better than leaving GBs of temp files.
                             obbOk = true 
                         }
@@ -1162,7 +1155,7 @@ class MainRepository(private val context: Context) {
                     if (!file.delete()) {
                         Log.w(TAG, "Failed to delete staged APK: ${file.name}")
                     }
-                } else if (System.currentTimeMillis() - file.lastModified() > 1000 * 60 * 60 * 24) {
+                } else if (System.currentTimeMillis() - file.lastModified() > Constants.STAGED_APK_MAX_AGE_MS) {
                     // Old staged APK cleanup (24+ hours old) for non-installed packages
                     Log.d(TAG, "Cleaning up old staged APK (24+ hours): ${file.name}")
                     if (!file.delete()) {
@@ -1173,13 +1166,12 @@ class MainRepository(private val context: Context) {
         }
     }
 
-    fun cleanupInstall(releaseName: String, totalBytes: Long) {
-        val hash = CryptoUtils.md5(releaseName + "\n")
-        val gameTempDir = File(tempInstallRoot, hash)
-        if (!gameTempDir.exists()) return
-        gameTempDir.deleteRecursively()
-    }
-
+        fun cleanupInstall(releaseName: String) {
+            val hash = CryptoUtils.md5(releaseName + "\n")
+            val gameTempDir = File(tempInstallRoot, hash)
+            if (!gameTempDir.exists()) return
+            gameTempDir.deleteRecursively()
+        }
     suspend fun deleteDownloadedGame(releaseName: String) = withContext(Dispatchers.IO) {
         // Cancel any active WorkManager tasks before deleting files
         cancelDownloadWork(releaseName)
@@ -1585,6 +1577,7 @@ class MainRepository(private val context: Context) {
      * @return The standardized APK file name (e.g., "com.example.game.apk")
      */
     fun getStagedApkFileName(packageName: String): String {
+        require(packageName.isNotBlank()) { "Package name cannot be empty or blank" }
         return "$packageName.apk"
     }
 
@@ -1599,38 +1592,53 @@ class MainRepository(private val context: Context) {
         return File(dir, getStagedApkFileName(packageName))
     }
 
+        /**
+         * Gets the File object for the staged APK of a package, only if it exists and passes integrity checks.
+         *
+         * @param packageName The package name of the game
+         * @param expectedVersionCode Optional: if provided, verifies that the APK's version code matches
+         * @return The validated File object for the staged APK, or null if missing/invalid/mismatched
+         */
+        fun getValidStagedApk(packageName: String, expectedVersionCode: Long? = null): File? {
+            val file = getStagedApkFile(packageName) ?: return null 
+            return if (isValidApkFile(file, packageName, expectedVersionCode)) file else null
+        }
     /**
-     * Gets the File object for the staged APK of a package, only if it exists and passes integrity checks.
-     *
-     * @param packageName The package name of the game
-     * @return The validated File object for the staged APK, or null if missing/invalid/mismatched
-     */
-    fun getValidStagedApk(packageName: String): File? {
-        val file = getStagedApkFile(packageName) ?: return null
-        return if (isValidApkFile(file, packageName)) file else null
-    }
-
-    /**
-     * Validates that a file is a valid APK using PackageManager and optionally matches a package name.
+     * Validates that a file is a valid APK using PackageManager and optionally matches a package name and version code.
      *
      * This ensures that staged APK files are actually valid Android packages
      * and not corrupted, and optionally that they match the expected identity.
      *
      * @param apkFile The APK file to validate
      * @param expectedPackageName Optional: if provided, verifies that the APK's internal package name matches
-     * @return true if the file is a valid APK (and matches expectedPackageName if provided), false otherwise
+     * @param expectedVersionCode Optional: if provided, verifies that the APK's version code matches
+     * @return true if the file is a valid APK (and matches expected parameters if provided), false otherwise
      */
-    fun isValidApkFile(apkFile: File, expectedPackageName: String? = null): Boolean {
+    fun isValidApkFile(
+        apkFile: File,
+        expectedPackageName: String? = null,
+        expectedVersionCode: Long? = null
+    ): Boolean {
         if (!apkFile.exists() || apkFile.length() == 0L) {
             return false
         }
 
         return try {
+            // Use 0 flags for performance as we only need basic package info (name, version)
             val packageInfo = context.packageManager.getPackageArchiveInfo(
                 apkFile.absolutePath,
-                PackageManager.GET_ACTIVITIES or PackageManager.GET_SERVICES
+                0
             )
-            packageInfo != null && (expectedPackageName == null || packageInfo.packageName == expectedPackageName)
+            
+            if (packageInfo == null) return false
+            
+            val packageMatch = expectedPackageName == null || packageInfo.packageName == expectedPackageName
+            
+            // Check version code (handles both legacy and long version codes)
+            val versionMatch = expectedVersionCode == null || 
+                    (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) packageInfo.longVersionCode else packageInfo.versionCode.toLong()) == expectedVersionCode
+            
+            packageMatch && versionMatch
         } catch (e: Exception) {
             Log.w(TAG, "Failed to validate APK file: ${apkFile.name}", e)
             false
@@ -1652,25 +1660,28 @@ class MainRepository(private val context: Context) {
      * @param preservePackageName If specified, the APK for this package will not be deleted
      * @return The number of APK files deleted
      */
-    fun cleanupStagedApks(preservePackageName: String?): Int {
-        val externalFilesDir = context.getExternalFilesDir(null) ?: return 0
-        val apkFiles = externalFilesDir.listFiles()?.filter { it.name.endsWith(".apk") } ?: return 0
-
-        var deletedCount = 0
-        apkFiles.forEach { file ->
-            // Preserve the specified package's APK if provided
-            if (preservePackageName != null && file.name == getStagedApkFileName(preservePackageName)) {
-                return@forEach
+        fun cleanupStagedApks(preservePackageName: String?): Int {
+            val externalFilesDir = context.getExternalFilesDir(null) ?: return 0
+            val apkFiles = externalFilesDir.listFiles()?.filter { it.name.endsWith(".apk") } ?: return 0
+    
+            var deletedCount = 0
+            apkFiles.forEach { file ->
+                // Preserve the specified package's APK if provided 
+                if (preservePackageName != null && file.name == getStagedApkFileName(preservePackageName)) {
+                    return@forEach
+                }
+    
+                // Re-check existence to prevent race conditions with other operations
+                if (file.exists()) {
+                    Log.d(TAG, "Cleaning up staged APK: ${file.name}")
+                    if (file.delete()) {
+                        deletedCount++
+                    } else {
+                        Log.w(TAG, "Failed to delete staged APK: ${file.name}")
+                    }
+                }
             }
-
-            Log.d(TAG, "Cleaning up staged APK: ${file.name}")
-            if (file.delete()) {
-                deletedCount++
-            } else {
-                Log.w(TAG, "Failed to delete staged APK: ${file.name}")
-            }
+    
+            return deletedCount
         }
-
-        return deletedCount
-    }
 }

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### 🔧 Technical Notes
+- **AGP 9.0.0 Upgrade Rejected:** Android Studio recommended upgrading to Android Gradle Plugin 9.0.0, but this caused build failures due to Room 2.6.1 incompatibility with Kotlin 2.2.x (kotlinx-metadata-jvm version mismatch). Reverted to AGP 8.13.2 + Kotlin 1.9.22. Future upgrade will require migrating Room to 2.8.x with KSP.
+
 ## [2.4.0] - 2026-01-05
 
 ### ✨ New Features

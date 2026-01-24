@@ -754,7 +754,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun handleZombieTaskRecovery(task: InstallTaskState) = withContext(Dispatchers.IO) {
         val context = getApplication<Application>()
         val tempInstallRoot = File(context.filesDir, "install_temp")
-        val externalFilesDir = context.getExternalFilesDir(null)
 
         // Compute hash for temp directory (matches MainRepository logic)
         val hash = com.vrpirates.rookieonquest.data.CryptoUtils.md5(task.releaseName + "\n")
@@ -764,8 +763,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // Check for staged APK in externalFilesDir (already extracted and ready for install)
         // Uses packageName.apk naming convention to prevent cross-contamination between installation tasks
-        // Validates file size and APK integrity (including package name match) using repository helper
-        val stagedApk = repository.getValidStagedApk(task.packageName)
+        // Validates APK integrity (including package name and version match) using repository helper
+        val game = repository.getGameByReleaseName(task.releaseName)
+        val expectedVersion = game?.versionCode?.toLongOrNull()
+        val stagedApk = repository.getValidStagedApk(task.packageName, expectedVersion)
 
         // Log recovery state for debugging
         when {
@@ -1370,8 +1371,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             // Check for staged APK in externalFilesDir (ready for install, extraction already done)
             // Uses packageName.apk naming convention to prevent cross-contamination between installation tasks
-            // Validates APK integrity (including package name match) using repository helper
-            val stagedApk = repository.getValidStagedApk(task.packageName)
+            // Validates APK integrity (including package name and version match) using repository helper
+            val expectedVersion = game.versionCode.toLongOrNull()
+            val stagedApk = repository.getValidStagedApk(task.packageName, expectedVersion)
 
             Triple(stagedApk, extractionMarker.exists() && extractionDir.exists(), gameTempDir)
         }
@@ -1394,15 +1396,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        if (isExtractionComplete) {
-            // Extraction already complete - skip WorkManager and go directly to installation
-            Log.i(TAG, "Extraction already complete for ${task.releaseName}, skipping to installation")
-            handleDownloadSuccess(task.releaseName, task.gameName)
-            // Wait for extraction/installation to complete before returning
-            taskCompletionSignals[task.releaseName]?.await()
-            return
-        }
-
+                if (isExtractionComplete) {
+                    // Extraction already complete - skip WorkManager and go directly to installation
+                    Log.i(TAG, "Extraction already complete for ${task.releaseName}, skipping to installation")
+                    handleDownloadSuccess(task.releaseName)
+                    // Wait for extraction/installation to complete before returning
+                    taskCompletionSignals[task.releaseName]?.await()    
+                    return
+                }
         Log.i(TAG, "Enqueueing WorkManager download for: ${task.releaseName}")
 
         // Enqueue download via WorkManager - survives process death
@@ -1475,7 +1476,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         WorkInfo.State.SUCCEEDED -> {
                             Log.i(TAG, "Work SUCCEEDED: $releaseName")
-                            handleDownloadSuccess(releaseName, gameName)
+                            handleDownloadSuccess(releaseName)
                         }
                         WorkInfo.State.FAILED -> {
                             val errorMessage = workInfo.outputData.getString(
@@ -1516,7 +1517,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         downloadObserverJobs[releaseName] = job
     }
 
-    private suspend fun handleDownloadSuccess(releaseName: String, gameName: String) {
+    private suspend fun handleDownloadSuccess(releaseName: String) {
         refreshDownloadedReleases()
 
         val task = installQueue.value.find { it.releaseName == releaseName }
@@ -1545,10 +1546,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             keepApk = _keepApks.value,
                             downloadOnly = true, // Moves to Downloads without launching installer
                             skipRemoteVerification = true // Files already verified by WorkManager
-                        ) { message, progress, current, total ->
+                        ) { _, progress, current, total ->
                             // The repository already scales progress (0-0.8 download, 0.8-1.0 extraction)
                             // So we use it directly instead of re-scaling which would cause jumps
-                            updateTaskProgress(releaseName, message, progress, current, total)
+                            updateTaskProgress(releaseName, progress, current, total)
                         }
 
                         updateTaskStatus(releaseName, InstallTaskStatus.COMPLETED)
@@ -1616,22 +1617,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         keepApk = _keepApks.value,
                         downloadOnly = false,
                         skipRemoteVerification = true // Skip HEAD requests - files already verified by WorkManager
-                    ) { message, progress, current, total ->
-                        // The repository already scales progress (0-0.8 download, 0.8-1.0 extraction)
-                        // So we use it directly instead of re-scaling which would cause jumps
-                        val adjustedProgress = progress
-
-                        // Determine status from message
-                        val status = when {
-                            message.contains("Extract", ignoreCase = true) -> InstallTaskStatus.EXTRACTING
-                            message.contains("Installing", ignoreCase = true) -> InstallTaskStatus.INSTALLING
-                            message.contains("OBB", ignoreCase = true) -> InstallTaskStatus.INSTALLING
-                            message.contains("Launching", ignoreCase = true) -> InstallTaskStatus.INSTALLING
-                            else -> InstallTaskStatus.EXTRACTING
-                        }
-
-                        updateTaskProgress(releaseName, message, adjustedProgress, current, total)
-
+                                        ) { message, progress, current, total ->    
+                                            // The repository already scales progress (0-0.8 download, 0.8-1.0 extraction)
+                                            // So we use it directly instead of re-scaling which would cause jumps
+                                            val adjustedProgress = progress
+                    
+                                            // Determine status from message        
+                                            val status = when {
+                                                message.contains("Extract", ignoreCase = true) -> InstallTaskStatus.EXTRACTING
+                                                message.contains("Installing", ignoreCase = true) -> InstallTaskStatus.INSTALLING
+                                                message.contains("OBB", ignoreCase = true) -> InstallTaskStatus.INSTALLING
+                                                message.contains("Launching", ignoreCase = true) -> InstallTaskStatus.INSTALLING
+                                                else -> InstallTaskStatus.EXTRACTING
+                                            }
+                    
+                                            updateTaskProgress(releaseName, adjustedProgress, current, total)
                         // Update status if changed
                         val currentTask = installQueue.value.find { it.releaseName == releaseName }
                         if (currentTask?.status != status) {
@@ -1654,7 +1654,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     // Now clean up temp files (after successful installation trigger)
                     if (task != null) {
-                        repository.cleanupInstall(releaseName, task.totalBytes)
+                        repository.cleanupInstall(releaseName)
                     }
 
                     // Remove completed task from Room DB
@@ -1732,7 +1732,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      *
      * Contrast with updateTaskProgress() which IS throttled to max 1 update per 500ms.
      */
-    private fun updateTaskStatus(releaseName: String, status: InstallTaskStatus, error: String? = null) {
+    private fun updateTaskStatus(releaseName: String, status: InstallTaskStatus) {
         // Terminal states must persist even if ViewModel/coroutine is cancelled
         val isTerminalState = status == InstallTaskStatus.COMPLETED || status == InstallTaskStatus.FAILED
         val context = if (isTerminalState) NonCancellable else viewModelScope.coroutineContext
@@ -1763,7 +1763,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Optimization: After the first write that includes totalBytes, subsequent writes
      * skip totalBytes since it's constant throughout the download.
      */
-    private fun updateTaskProgress(releaseName: String, message: String, progress: Float, current: Long, total: Long) {
+    private fun updateTaskProgress(releaseName: String, progress: Float, current: Long, total: Long) {
         // Check throttle BEFORE launching coroutine to avoid memory pressure
         val now = System.currentTimeMillis()
         val lastUpdate = progressThrottleMap[releaseName] ?: 0L
@@ -1834,7 +1834,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelInstall(releaseName: String) {
-        val task = installQueue.value.find { it.releaseName == releaseName } ?: return
+        if (installQueue.value.none { it.releaseName == releaseName }) return
 
         // Cancel WorkManager work first
         repository.cancelDownloadWork(releaseName)
@@ -1853,7 +1853,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            repository.cleanupInstall(releaseName, task.totalBytes)
+            repository.cleanupInstall(releaseName)
             // Remove from Room DB
             repository.removeFromQueue(releaseName)
             progressThrottleMap.remove(releaseName) // Clean up throttling state

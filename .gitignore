@@ -49,7 +49,6 @@ Thumbs.db
 
 # Project specific
 rookie/
-GEMINI.md
 temp_notes.md
 
 # Agent & IDE specific folders
@@ -61,3 +60,11 @@ temp_notes.md
 .opencode/
 .qwen/
 .roo/
+
+# Miscellaneous
+nul
+node_modules/
+package-lock.json
+package.json
+GEMINI.md
+QWEN.md
