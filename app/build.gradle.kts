@@ -15,8 +15,8 @@ android {
         applicationId = "com.vrpirates.rookieonquest"
         minSdk = 29
         targetSdk = 34
-        versionCode = 8
-        versionName = "2.4.0"
+        versionCode = 9
+        versionName = "2.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -110,6 +110,11 @@ dependencies {
     implementation("androidx.room:room-ktx:$roomVersion")
     kapt("androidx.room:room-compiler:$roomVersion")
 
+    // WorkManager for background download tasks
+    val workVersion = "2.9.1"
+    implementation("androidx.work:work-runtime-ktx:$workVersion")
+    androidTestImplementation("androidx.work:work-testing:$workVersion")
+
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("androidx.room:room-testing:$roomVersion")
@@ -120,6 +125,8 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
     androidTestImplementation(platform("androidx.compose:compose-bom:2023.10.01"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    // MockWebServer for HTTP testing
+    androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

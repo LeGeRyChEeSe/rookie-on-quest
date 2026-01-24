@@ -16,45 +16,49 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.Call
 import okhttp3.Callback
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import org.apache.commons.compress.archivers.sevenz.SevenZFile
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.Observer
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import com.vrpirates.rookieonquest.worker.DownloadWorker
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.channels.trySendBlocking
+import kotlinx.coroutines.flow.channelFlow
 
 class MainRepository(private val context: Context) {
     private val TAG = "MainRepository"
     private val catalogMutex = Mutex()
     private val db = AppDatabase.getDatabase(context)
     private val gameDao = db.gameDao()
-    
-    private val retrofit = Retrofit.Builder()
-        .baseUrl("https://vrpirates.wiki/")
-        .addConverterFactory(GsonConverterFactory.create())
-        .build()
 
-    private val service = retrofit.create(VrpService::class.java)
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
-        
+    // Use shared network instances from NetworkModule (singleton)
+    private val okHttpClient = NetworkModule.okHttpClient
+    private val service = NetworkModule.retrofit.create(VrpService::class.java)
+
     private val prefs = context.getSharedPreferences(Constants.PREFS_NAME, Context.MODE_PRIVATE)
 
     private var cachedConfig: PublicConfig? = null
@@ -63,10 +67,12 @@ class MainRepository(private val context: Context) {
     val iconsDir = File(context.filesDir, "icons").apply { if (!exists()) mkdirs() }
     val thumbnailsDir = File(context.filesDir, "thumbnails").apply { if (!exists()) mkdirs() }
     val notesDir = File(context.filesDir, "notes").apply { if (!exists()) mkdirs() }
-    
+
     private val catalogCacheFile = File(context.filesDir, "VRP-GameList.txt")
-    private val tempInstallRoot = File(context.cacheDir, "install_temp")
-    val downloadsDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "RookieOnQuest")
+    // Use filesDir instead of cacheDir to prevent Android from purging large game archives
+    // during extraction. cacheDir can be cleaned by the system when storage is low.
+    private val tempInstallRoot = File(context.filesDir, "install_temp")
+    val downloadsDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), FilePaths.DOWNLOADS_ROOT_DIR_NAME)
     val logsDir = File(downloadsDir, "logs").apply { if (!exists()) mkdirs() }
 
     fun getAllGamesFlow(): Flow<List<GameData>> = gameDao.getAllGames().map { entities ->
@@ -228,7 +234,7 @@ class MainRepository(private val context: Context) {
     }
 
     private suspend fun downloadFile(url: String, targetFile: File) {
-        val request = Request.Builder().url(url).header("User-Agent", "rclone/v1.72.1").build()
+        val request = Request.Builder().url(url).header("User-Agent", Constants.USER_AGENT).build()
         okHttpClient.newCall(request).await().use { response ->
             if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
             response.body?.byteStream()?.use { input ->
@@ -265,9 +271,21 @@ class MainRepository(private val context: Context) {
         }
     }
 
+    /**
+     * Fetches remote game information including segment sizes, descriptions, and screenshots.
+     *
+     * NOTE: The segment fetching logic in this method is intentionally duplicated from
+     * DownloadWorker.fetchRemoteSegments() due to subtle differences in requirements:
+     * - This method also fetches metadata (descriptions, screenshots)
+     * - Different error handling for UI vs background contexts
+     * - DownloadWorker needs simpler error recovery for WorkManager retries
+     *
+     * If modifying segment fetching logic, also review DownloadWorker.fetchRemoteSegments()
+     * for consistency to prevent behavioral divergence.
+     */
     suspend fun getGameRemoteInfo(game: GameData): Triple<Map<String, Long>, Long, Map<String, Any?>> = withContext(Dispatchers.IO) {
         val config = cachedConfig ?: throw Exception("Config not loaded")
-        val hash = md5(game.releaseName + "\n")
+        val hash = CryptoUtils.md5(game.releaseName + "\n")
         val sanitizedBase = if (config.baseUri.endsWith("/")) config.baseUri else "${config.baseUri}/"
         val dirUrl = "$sanitizedBase$hash/"
 
@@ -279,26 +297,26 @@ class MainRepository(private val context: Context) {
         var description: String? = if (localNote.exists()) localNote.readText() else game.description
 
         try {
-            val request = Request.Builder().url(dirUrl).header("User-Agent", "rclone/v1.72.1").build()
+            val request = Request.Builder().url(dirUrl).header("User-Agent", Constants.USER_AGENT).build()
             okHttpClient.newCall(request).await().use { response ->
                 if (response.code == 404) {
                     gameDao.updateSize(game.releaseName, -1L)
-                    throw Exception("Mirror error: 404")
+                    // Use type-safe exception for consistent error handling
+                    throw MirrorNotFoundException(game.releaseName)
                 }
                 if (!response.isSuccessful) throw Exception("Mirror error: ${response.code}")
-                
+
                 val html = response.body?.string() ?: ""
-                
-                // Extract all relevant entries (files or folders)
-                val entryMatcher = java.util.regex.Pattern.compile("href\\s*=\\s*\"([^\"]+)\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html)
-                while (entryMatcher.find()) {
-                    val entry = entryMatcher.group(1) ?: continue
-                    if (entry.startsWith(".") || entry.startsWith("_") || entry.contains("notes.txt") || entry.contains("screenshot") || entry == "../") continue
-                    
+
+                // Extract all relevant entries (files or folders) using idiomatic Kotlin Regex
+                DownloadUtils.HREF_REGEX.findAll(html).forEach { matchResult ->
+                    val entry = matchResult.groupValues[1]
+                    if (DownloadUtils.shouldSkipEntry(entry)) return@forEach
+
                     if (entry.endsWith("/")) {
                         // It's a folder (like com.beatgames.beatsaber/)
                         fetchAllFilesFromDir(dirUrl + entry, entry).forEach { rawSegments.add(it) }
-                    } else if (entry.lowercase().let { it.endsWith(".apk") || it.endsWith(".obb") || it.contains(".7z.") || it.endsWith(".7z") }) {
+                    } else if (DownloadUtils.isDownloadableFile(entry)) {
                         rawSegments.add(entry)
                     }
                 }
@@ -315,7 +333,7 @@ class MainRepository(private val context: Context) {
                 if (description == null && html.contains("notes.txt", ignoreCase = true)) {
                     val notesUrl = dirUrl + "notes.txt"
                     try {
-                        val notesRequest = Request.Builder().url(notesUrl).header("User-Agent", "rclone/v1.72.1").build()
+                        val notesRequest = Request.Builder().url(notesUrl).header("User-Agent", Constants.USER_AGENT).build()
                         okHttpClient.newCall(notesRequest).await().use { notesResponse ->
                             if (notesResponse.isSuccessful) {
                                 description = notesResponse.body?.string()?.trim()
@@ -326,106 +344,242 @@ class MainRepository(private val context: Context) {
                     }
                 }
             }
-            
-            // Deduplicate segments by filename (prefer root version)
-            val uniqueSegments = rawSegments.groupBy { it.substringAfterLast('/') }
-                .map { (_, list) -> 
-                    list.minByOrNull { it.count { c -> c == '/' } }!!
-                }
 
-            val segmentMap = uniqueSegments.map { seg ->
-                async {
-                    val headRequest = Request.Builder()
-                        .url(dirUrl + seg)
-                        .head()
-                        .header("User-Agent", "rclone/v1.72.1")
-                        .build()
-                    okHttpClient.newCall(headRequest).await().use { response ->
-                        val size = response.header("Content-Length")?.toLongOrNull() ?: 0L
-                        seg to size
+            // Use full path for deduplication to prevent data loss in special directory structures
+            // Files with same name but different paths are likely different files (e.g., Quake3Quest data folders)
+            val uniqueSegments = rawSegments.distinct()
+
+            // Parallelize HEAD requests with Semaphore rate limiting
+            // Semaphore prevents socket exhaustion on mirror servers
+            // runCatching ensures a single mirror timeout doesn't fail the entire download batch
+            val segmentMap = supervisorScope {
+                uniqueSegments.map { seg ->
+                    async {
+                        DownloadUtils.headRequestSemaphore.withPermit {
+                            currentCoroutineContext().ensureActive()
+                            runCatching {
+                                val headRequest = Request.Builder()
+                                    .url(dirUrl + seg)
+                                    .head()
+                                    .header("User-Agent", Constants.USER_AGENT)
+                                    .build()
+                                okHttpClient.newCall(headRequest).await().use { response ->
+                                    val size = response.header("Content-Length")?.toLongOrNull() ?: 0L
+                                    seg to size
+                                }
+                            }.getOrElse { e ->
+                                Log.w(TAG, "HEAD request failed for $seg, will determine size during download", e)
+                                // Return -1 size - actual size will be determined during download
+                                // Using 0L caused a bug where existingSize >= 0 was always true, skipping the file
+                                seg to -1L
+                            }
+                        }
                     }
-                }
-            }.awaitAll().toMap()
-            
-            val totalSize = segmentMap.values.sum()
+                }.awaitAll().toMap()
+            }
+
+            // Filter out failed HEAD requests (-1L) before summing to prevent invalid totalSize
+            // -1L indicates unknown size (will be determined during download)
+            val validSegments = segmentMap.filter { it.value > 0L }
+            val totalSize = validSegments.values.sum()
             
             gameDao.updateSize(game.releaseName, totalSize)
             gameDao.updateMetadata(game.releaseName, description, screenshotUrls.joinToString("|"))
-            
+
             Triple(segmentMap, totalSize, mapOf("description" to description, "screenshots" to screenshotUrls))
         } catch (e: Exception) {
-            if (e.message?.contains("404") == true) {
-                 gameDao.updateSize(game.releaseName, -1L)
+            // Use type-safe exception checking instead of brittle string matching
+            // MirrorNotFoundException is thrown explicitly when response.code == 404
+            if (e is MirrorNotFoundException) {
+                gameDao.updateSize(game.releaseName, -1L)
             }
             throw e
         }
     }
 
+    /**
+     * Recursively fetches all files from a directory URL.
+     *
+     * Error handling strategy:
+     * - HTTP errors (4xx/5xx): Logged and return empty list (directory may not exist or be inaccessible)
+     * - Network/IO errors: Logged and return empty list (transient errors shouldn't fail the whole operation)
+     * - CancellationException: Propagated to allow proper coroutine cancellation
+     *
+     * This permissive error handling is intentional because:
+     * 1. A single subdirectory failure shouldn't prevent downloading other files
+     * 2. Some mirror directories may have permission issues or be temporarily unavailable
+     * 3. The caller (getGameRemoteInfo) aggregates files from multiple sources
+     *
+     * @param baseUrl The directory URL to fetch from
+     * @param prefix Path prefix to prepend to discovered files
+     * @return List of file paths found (may be empty if directory is inaccessible)
+     */
     private suspend fun fetchAllFilesFromDir(baseUrl: String, prefix: String): List<String> = withContext(Dispatchers.IO) {
         val files = mutableListOf<String>()
         try {
-            val request = Request.Builder().url(baseUrl).header("User-Agent", "rclone/v1.72.1").build()
+            currentCoroutineContext().ensureActive()
+            val request = Request.Builder().url(baseUrl).header("User-Agent", Constants.USER_AGENT).build()
             okHttpClient.newCall(request).await().use { response ->
                 if (response.isSuccessful) {
                     val html = response.body?.string() ?: ""
-                    val matcher = java.util.regex.Pattern.compile("href\\s*=\\s*\"([^\"]+)\"", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html)
-                    while (matcher.find()) {
-                        val entry = matcher.group(1) ?: continue
-                        if (entry.startsWith(".") || entry == "../") continue
+
+                    // Use idiomatic Kotlin Regex instead of deprecated HREF_PATTERN
+                    DownloadUtils.HREF_REGEX.findAll(html).forEach { matchResult ->
+                        currentCoroutineContext().ensureActive()
+                        val entry = matchResult.groupValues[1]
+                        if (entry.startsWith(".") || entry == "../") return@forEach
                         if (entry.endsWith("/")) {
                             files.addAll(fetchAllFilesFromDir(baseUrl + entry, prefix + entry))
                         } else {
                             files.add(prefix + entry)
                         }
                     }
+                } else {
+                    // Log non-successful responses for debugging
+                    Log.w(TAG, "Failed to list dir $baseUrl: HTTP ${response.code}")
                 }
             }
+        } catch (e: CancellationException) {
+            // Propagate cancellation to allow proper coroutine cleanup
+            throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Error listing dir $baseUrl", e)
+            // Log error but don't fail - some directories may be inaccessible
+            Log.w(TAG, "Error listing dir $baseUrl: ${e.message}")
         }
         files
     }
 
-    private fun checkAvailableSpace(requiredBytes: Long) {
-        val stat = StatFs(Environment.getExternalStorageDirectory().path)
-        val availableBytes = stat.availableBlocksLong * stat.blockSizeLong 
-        
-        if (availableBytes < requiredBytes) {
-            val requiredMb = requiredBytes / (1024 * 1024)
+    private fun checkAvailableSpace(
+        requiredBytes: Long,
+        hasUnknownSizes: Boolean = false,
+        checkExternalStorage: Boolean = false
+    ) {
+        // CRITICAL: Check space on filesDir partition where tempInstallRoot writes to
+        // Consistency with DownloadWorker is essential to prevent false positives/negatives
+        val stat = StatFs(context.filesDir.path)
+        val availableBytes = stat.availableBlocksLong * stat.blockSizeLong
+
+        // When sizes are unknown, require a conservative minimum space check
+        // This prevents downloads with all -1L sizes from bypassing space validation
+        val effectiveRequired = if (hasUnknownSizes && requiredBytes == 0L) {
+            // Require at least 1GB as a safety buffer when all sizes are unknown
+            Constants.UNKNOWN_SIZE_SPACE_BUFFER
+        } else {
+            requiredBytes
+        }
+
+        // Check internal storage (filesDir where tempInstallRoot writes)
+        if (availableBytes < effectiveRequired) {
+            val requiredMb = effectiveRequired / (1024 * 1024)
             val availableMb = availableBytes / (1024 * 1024)
-            throw Exception("Insufficient storage space. Need ${requiredMb}MB, but only ${availableMb}MB available.")
+            throw Exception("Insufficient storage space on internal partition. Need ${requiredMb}MB, but only ${availableMb}MB available.")
+        }
+
+        // Check external storage (downloadsDir) for download-only and keep-apk modes
+        // These modes save APKs to external storage, so we need to verify that space too
+        if (checkExternalStorage) {
+            try {
+                val externalStat = StatFs(downloadsDir.path)
+                val externalAvailable = externalStat.availableBlocksLong * externalStat.blockSizeLong
+
+                if (externalAvailable < effectiveRequired) {
+                    val requiredMb = effectiveRequired / (1024 * 1024)
+                    val availableMb = externalAvailable / (1024 * 1024)
+                    throw Exception("Insufficient storage space on external storage. Need ${requiredMb}MB, but only ${availableMb}MB available.")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not check external storage space for $downloadsDir", e)
+                // Don't fail on external storage check errors - the device might not have external storage
+                // or the downloadsDir might not be accessible yet
+            }
+        }
+
+        // Log warning if we're proceeding with unknown sizes but minimal space check passed
+        if (hasUnknownSizes && requiredBytes == 0L) {
+            Log.w(TAG, "Proceeding with unknown sizes - space check passed minimum 1GB threshold")
         }
     }
 
+    /**
+     * Installs a game by extracting archives and moving files to correct locations.
+     *
+     * @param game The game metadata
+     * @param keepApk If true, save APK to Downloads folder
+     * @param downloadOnly If true, skip installation after download
+     * @param skipRemoteVerification If true, skip HEAD requests to verify file sizes.
+     *        Used when called after WorkManager download completes, since files are already verified.
+     *        This optimization avoids redundant network calls.
+     * @param onProgress Progress callback
+     * @return APK file to install, or null if download-only or already installed
+     */
     suspend fun installGame(
-        game: GameData, 
+        game: GameData,
         keepApk: Boolean = false,
         downloadOnly: Boolean = false,
+        skipRemoteVerification: Boolean = false,
         onProgress: (String, Float, Long, Long) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         // 1. Check if already installed and up to date
         val installedMap = getInstalledPackagesMap()
         val installedVersion = installedMap[game.packageName]
         val targetVersion = game.versionCode.toLongOrNull() ?: 0L
-        
+
         if (!downloadOnly && installedVersion != null && installedVersion >= targetVersion) {
             onProgress("Already installed (v$installedVersion)", 1f, 0, 0)
             delay(1500)
             return@withContext null
         }
 
-        // 2. IMPORTANT: Always fetch ground truth from server first to verify what we have locally
-        onProgress("Verifying with server...", 0.02f, 0, 0)
-        val (remoteSegments, totalBytes, _) = getGameRemoteInfo(game)
-        if (remoteSegments.isEmpty()) throw Exception("No installable files found on server")
+        // 2. Fetch remote file info (skip HEAD requests if coming from WorkManager handoff)
+        val remoteSegments: Map<String, Long>
+        val totalBytes: Long
+
+        if (skipRemoteVerification) {
+            // WorkManager already downloaded files - verify locally instead of making HEAD requests
+            onProgress("Preparing extraction...", Constants.PROGRESS_MILESTONE_VERIFYING, 0, 0)
+            val hash = CryptoUtils.md5(game.releaseName + "\n")
+            val gameTempDir = File(tempInstallRoot, hash)
+
+            // Build segment map from local files
+            val localSegments = mutableMapOf<String, Long>()
+            if (gameTempDir.exists()) {
+                gameTempDir.walkTopDown().filter { it.isFile }.forEach { file ->
+                    val relativePath = file.relativeTo(gameTempDir).path
+                    if (relativePath != "extraction_done.marker" && !relativePath.startsWith("extracted")) {
+                        localSegments[relativePath] = file.length()
+                    }
+                }
+            }
+            remoteSegments = localSegments
+            totalBytes = localSegments.values.sum()
+
+            if (remoteSegments.isEmpty()) {
+                // Fallback to server verification if no local files found
+                Log.w(TAG, "No local files found for ${game.releaseName}, falling back to server verification")
+                return@withContext installGame(game, keepApk, downloadOnly, skipRemoteVerification = false, onProgress)
+            }
+        } else {
+            // Standard path: fetch ground truth from server
+            onProgress("Verifying with server...", Constants.PROGRESS_MILESTONE_VERIFYING, 0, 0)
+            val result = getGameRemoteInfo(game)
+            remoteSegments = result.first
+            totalBytes = result.second
+        }
+
+        if (remoteSegments.isEmpty()) throw Exception("No installable files found")
 
         // PRE-FLIGHT SPACE CHECK
         val isSevenZ = remoteSegments.keys.any { it.contains(".7z") }
-        val multiplier = if (isSevenZ) if (downloadOnly || keepApk) 2.9 else 1.9 else 1.1
-        val estimatedRequired = (totalBytes * multiplier).toLong()
-        checkAvailableSpace(estimatedRequired)
+        val hasUnknownSizes = remoteSegments.values.any { it == -1L }
+        val estimatedRequired = DownloadUtils.calculateRequiredStorage(
+            totalBytes = totalBytes,
+            isSevenZArchive = isSevenZ,
+            keepApkOrDownloadOnly = downloadOnly || keepApk
+        )
+        // Check internal storage (for temp files) and external storage (for download-only/keep-apk modes)
+        checkAvailableSpace(estimatedRequired, hasUnknownSizes, checkExternalStorage = downloadOnly || keepApk)
 
-        val hash = md5(game.releaseName + "\n")
+        val hash = CryptoUtils.md5(game.releaseName + "\n")
         val gameTempDir = File(tempInstallRoot, hash)
         val extractionDir = File(gameTempDir, "extracted")
         val safeDirName = game.releaseName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
@@ -480,13 +634,25 @@ class MainRepository(private val context: Context) {
 
         if (!isLocalReady) {
             // Need to download or resume
+            //
+            // BEHAVIORAL ALIGNMENT NOTE: This download loop mirrors DownloadWorker.executeDownload()
+            // for consistency. Both implementations use the same:
+            // - Segment skip/resume/start logic based on existingSize vs remoteSize
+            // - 416 Range Not Satisfiable handling with Content-Range verification
+            // - Progress scaling (0-80% download, 80-100% extraction)
+            //
+            // Key difference: This path is used for direct installs (not via WorkManager),
+            // e.g., when files are already downloaded and only extraction is needed.
+            // DownloadWorker is the primary download path for new installations.
+            //
+            // If modifying download logic here, review DownloadWorker.downloadSegment() for consistency.
             val config = cachedConfig ?: throw Exception("Config not loaded")
             val password = decodedPassword ?: throw Exception("Password not available")
             val sanitizedBase = if (config.baseUri.endsWith("/")) config.baseUri else "${config.baseUri}/"
             val dirUrl = "$sanitizedBase$hash/"
 
             if (!gameTempDir.exists()) gameTempDir.mkdirs()
-            
+
             var totalBytesDownloaded = 0L
             remoteSegments.forEach { (seg, _) ->
                 val f = File(gameTempDir, seg)
@@ -498,46 +664,121 @@ class MainRepository(private val context: Context) {
                 val remoteSize = entry.value
                 currentCoroutineContext().ensureActive()
                 val localFile = File(gameTempDir, seg)
-                
+
                 val existingSize = if (localFile.exists()) localFile.length() else 0L
-                if (existingSize >= remoteSize) continue // Already have this part
+
+                // Skip segment logic - must handle unknown sizes (-1L) correctly
+                // -1L means HEAD request failed, so we can't determine completion without downloading
+                // Mirrors DownloadWorker.executeDownload() segment handling for behavioral consistency
+                when {
+                    // Segment complete: skip only if file exists and EXACTLY matches expected size
+                    remoteSize > 0L && existingSize == remoteSize -> {
+                        Log.d(TAG, "Skipping completed segment: $seg ($existingSize bytes)")
+                        continue
+                    }
+                    // Segment partial or oversized: will resume/download and let server decide via 206/200/416
+                    localFile.exists() && existingSize > 0L && (remoteSize == -1L || existingSize < remoteSize) -> {
+                        Log.d(TAG, "Resuming partial segment: $seg (have $existingSize bytes)")
+                    }
+                    // Segment missing: start fresh
+                    !localFile.exists() -> {
+                        Log.d(TAG, "Starting new segment: $seg")
+                    }
+                    // Oversized file (existingSize > remoteSize): re-download to ensure data integrity
+                    remoteSize > 0L && existingSize > remoteSize -> {
+                        Log.w(TAG, "Oversized file detected: $seg (local=$existingSize, remote=$remoteSize). Re-downloading for integrity.")
+                        localFile.delete()
+                        Log.d(TAG, "Starting new segment: $seg (deleted oversized file)")
+                    }
+                    // Unknown remote size (-1L): download and let server provide Content-Length
+                    remoteSize == -1L -> {
+                        Log.d(TAG, "Unknown remote size for $seg, will determine during download")
+                    }
+                }
 
                 val segUrl = dirUrl + seg
                 val segRequest = Request.Builder()
                     .url(segUrl)
-                    .header("User-Agent", "rclone/v1.72.1")
+                    .header("User-Agent", Constants.USER_AGENT)
                     .header("Range", "bytes=$existingSize-")
                     .build()
 
                 try {
                     okHttpClient.newCall(segRequest).await().use { response ->
-                        if (response.code != 416) {
-                            if (!response.isSuccessful) throw Exception("Failed to download $seg: ${response.code}")
-                            val isResume = response.code == 206
+                        // Handle 416 Range Not Satisfiable - verify file completion via Content-Range
+                        // Mirrors DownloadWorker.downloadSegment() for consistent 416 handling
+                        if (DownloadUtils.isRangeNotSatisfiable(response.code)) {
+                            val actualFileSize = localFile.length()
+                            val contentRange = response.header("Content-Range") // Format: "bytes */TOTAL"
+                            val expectedSize = contentRange?.substringAfter("*/")?.toLongOrNull()
+
+                            if (expectedSize != null && actualFileSize != expectedSize) {
+                                // File is corrupted/mismatched - delete and re-download
+                                Log.w(TAG, "416 but file size mismatch: local=$actualFileSize, expected=$expectedSize. Deleting and retrying.")
+                                localFile.delete()
+                                totalBytesDownloaded -= actualFileSize
+                                // Re-download this segment from scratch (without Range header)
+                                val freshRequest = Request.Builder()
+                                    .url(segUrl)
+                                    .header("User-Agent", Constants.USER_AGENT)
+                                    .build()
+                                okHttpClient.newCall(freshRequest).await().use { freshResponse ->
+                                    if (!freshResponse.isSuccessful) throw Exception("Failed to re-download $seg: ${freshResponse.code}")
+                                    val body = freshResponse.body ?: throw Exception("Empty body for $seg")
+                                    body.byteStream().use { input ->
+                                        localFile.parentFile?.let { if (!it.exists()) it.mkdirs() }
+                                        FileOutputStream(localFile, false).use { output ->
+                                            totalBytesDownloaded = DownloadUtils.downloadWithProgress(
+                                                inputStream = input,
+                                                outputStream = output,
+                                                initialDownloaded = totalBytesDownloaded,
+                                                totalBytes = totalBytes,
+                                                throttleMs = Constants.PROGRESS_THROTTLE_MS,
+                                                isCancelled = { false },
+                                                onProgress = { downloadedBytes, total, progress ->
+                                                    onProgress(
+                                                        "Downloading ${game.gameName} (${index + 1}/${remoteSegments.size})",
+                                                        progress * Constants.PROGRESS_DOWNLOAD_PHASE_END,
+                                                        downloadedBytes,
+                                                        total
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                // 416 with matching size = file is complete, skip this segment
+                                Log.i(TAG, "Segment complete (416): $seg ($actualFileSize bytes)")
+                            }
+                        } else if (response.isSuccessful) {
+                            val isResume = DownloadUtils.isResumeResponse(response.code)
                             val body = response.body ?: throw Exception("Empty body for $seg")
-                            
+
                             body.byteStream().use { input ->
                                 localFile.parentFile?.let { if (!it.exists()) it.mkdirs() }
                                 FileOutputStream(localFile, isResume).use { output ->
-                                    val buffer = ByteArray(8192 * 8)
-                                    var bytesRead: Int
-                                    while (true) {
-                                        currentCoroutineContext().ensureActive()
-                                        bytesRead = input.read(buffer)
-                                        if (bytesRead == -1) break
-                                        output.write(buffer, 0, bytesRead)
-                                        totalBytesDownloaded += bytesRead
-                                        
-                                        val overallProgress = if (totalBytes > 0) totalBytesDownloaded.toFloat() / totalBytes else 0f
-                                        onProgress(
-                                            "Downloading ${game.gameName} (${index + 1}/${remoteSegments.size})", 
-                                            overallProgress * 0.8f,
-                                            totalBytesDownloaded,
-                                            totalBytes
-                                        ) 
-                                    }
+                                    // Use shared download utility for consistent behavior
+                                    totalBytesDownloaded = DownloadUtils.downloadWithProgress(
+                                        inputStream = input,
+                                        outputStream = output,
+                                        initialDownloaded = totalBytesDownloaded,
+                                        totalBytes = totalBytes,
+                                        throttleMs = Constants.PROGRESS_THROTTLE_MS, // More frequent updates for direct downloads
+                                        isCancelled = { false }, // Cancellation handled by ensureActive()
+                                        onProgress = { downloadedBytes, total, progress ->
+                                            onProgress(
+                                                "Downloading ${game.gameName} (${index + 1}/${remoteSegments.size})",
+                                                progress * Constants.PROGRESS_DOWNLOAD_PHASE_END, // Download is 0-80%
+                                                downloadedBytes,
+                                                total
+                                            )
+                                        }
+                                    )
                                 }
                             }
+                        } else {
+                            throw Exception("Failed to download $seg: ${response.code}")
                         }
                     }
                 } catch (e: Exception) {
@@ -556,16 +797,17 @@ class MainRepository(private val context: Context) {
         val skipExtraction = isLocalReady && !extractionMarker.exists() && foundApk != null
 
         if (!extractionMarker.exists() && !skipExtraction) {
-            onProgress("Preparing files...", 0.82f, totalBytes, totalBytes)
+            onProgress("Preparing files...", Constants.PROGRESS_MILESTONE_EXTRACTION_START, totalBytes, totalBytes)
             val isArchive = remoteSegments.keys.any { it.contains(".7z") }
             
             if (!isArchive) {
                 remoteSegments.keys.forEach { seg ->
+                    currentCoroutineContext().ensureActive()
                     val source = File(gameTempDir, seg)
                     val target = File(extractionDir, seg)
                     if (source.exists()) {
                         target.parentFile?.let { if (!it.exists()) it.mkdirs() }
-                        source.copyTo(target, overwrite = true)
+                        copyToCancellable(source.inputStream(), target.outputStream())
                     }
                 }
                 extractionMarker.createNewFile()
@@ -575,7 +817,7 @@ class MainRepository(private val context: Context) {
                 val archiveTotalBytes = archiveParts.values.sum()
 
                 if (!combinedFile.exists() || combinedFile.length() < archiveTotalBytes) {
-                    onProgress("Merging files...", 0.85f, totalBytes, totalBytes)
+                    onProgress("Merging files...", Constants.PROGRESS_MILESTONE_MERGING, totalBytes, totalBytes)
                     combinedFile.outputStream().use { out ->
                         // Ensure correct order for merge and that files exist
                         archiveParts.keys
@@ -591,7 +833,7 @@ class MainRepository(private val context: Context) {
                     }
                 }
                 
-                onProgress("Extracting...", 0.88f, totalBytes, totalBytes)
+                onProgress("Extracting...", Constants.PROGRESS_MILESTONE_EXTRACTING, totalBytes, totalBytes)
                 val password = decodedPassword ?: ""
                 try {
                     SevenZFile.builder().setFile(combinedFile).setPassword(password.toCharArray()).get().use { sevenZFile ->
@@ -712,7 +954,7 @@ class MainRepository(private val context: Context) {
         }
         
         if (downloadOnly || keepApk) {
-            onProgress("Saving to Downloads...", 0.92f, totalBytes, totalBytes)
+            onProgress("Saving to Downloads...", Constants.PROGRESS_MILESTONE_SAVING_TO_DOWNLOADS, totalBytes, totalBytes)
             try {
                 if (!downloadsDir.exists()) downloadsDir.mkdirs()
                 if (!gameDownloadDir.exists()) gameDownloadDir.mkdirs()
@@ -728,19 +970,20 @@ class MainRepository(private val context: Context) {
                 packageFolder?.let { pf ->
                     if (pf.absolutePath != finalObbDir.absolutePath) {
                         pf.walkTopDown().forEach { source ->
+                            currentCoroutineContext().ensureActive()
                             if (!source.name.endsWith(".apk", true)) {
                                 val relPath = source.relativeTo(pf).path
                                 val dest = File(finalObbDir, relPath)
                                 if (source.isDirectory) dest.mkdirs()
                                 else {
-                                    source.copyTo(dest, overwrite = true)
-                                    MediaScannerConnection.scanFile(context, arrayOf(dest.absolutePath), null, null)
+                                    copyFileWithScanner(source, dest)
                                 }
                             }
                         }
                     }
                 }
                 looseObbs.forEach { loose ->
+                    currentCoroutineContext().ensureActive()
                     val targetObb = File(finalObbDir, loose.name)
                     if (loose.absolutePath != targetObb.absolutePath) {
                         copyFileWithScanner(loose, targetObb)
@@ -749,6 +992,7 @@ class MainRepository(private val context: Context) {
 
                 // Save special folders to downloads too
                 specialMoves.forEach { (source, _) ->
+                    currentCoroutineContext().ensureActive()
                     if (source.isDirectory && source.name != game.packageName) {
                         val targetDir = File(gameDownloadDir, source.name)
                         if (source.absolutePath != targetDir.absolutePath) {
@@ -758,6 +1002,7 @@ class MainRepository(private val context: Context) {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to save files to downloads", e)
+                throw e // Rethrow to notify UI of failure
             }
         }
 
@@ -769,7 +1014,7 @@ class MainRepository(private val context: Context) {
 
         // Apply special moves (e.g. Quake3Quest data folders)
         if (specialMoves.isNotEmpty()) {
-            onProgress("Installing Special Data...", 0.94f, totalBytes, totalBytes)
+            onProgress("Installing Special Data...", Constants.PROGRESS_MILESTONE_INSTALLING_OBBS, totalBytes, totalBytes)
             specialMoves.forEach { (source, destPath) ->
                 moveDataToSdcard(source, destPath)
             }
@@ -777,7 +1022,7 @@ class MainRepository(private val context: Context) {
 
         val hasObbs = packageFolder != null || looseObbs.isNotEmpty()
         if (hasObbs) {
-            onProgress("Installing OBBs...", 0.96f, totalBytes, totalBytes)
+            onProgress("Installing OBBs...", Constants.PROGRESS_MILESTONE_LAUNCHING_INSTALLER, totalBytes, totalBytes)
             moveObbFiles(packageFolder, looseObbs, game.packageName)
         }
 
@@ -788,13 +1033,29 @@ class MainRepository(private val context: Context) {
             Log.e(TAG, "Failed to write install info", e)
         }
 
-        onProgress("Launching installer...", 1f, totalBytes, totalBytes)
+        // Launching installer...
         if (finalApk == null || !finalApk.exists()) {
              throw Exception("Final APK not found for installation")
         }
-        val externalApk = File(context.getExternalFilesDir(null), finalApk.name)
-        finalApk.copyTo(externalApk, overwrite = true)
-        
+
+        // Clean up any existing APK files in externalFilesDir to prevent cross-contamination
+        val deletedCount = cleanupStagedApks()
+        if (deletedCount > 0) {
+            Log.d(TAG, "Cleaned up $deletedCount old staged APK(s)")
+        }
+
+        // Use centralized staged APK file utility
+        val externalApk = getStagedApkFile(game.packageName)
+            ?: throw IllegalStateException("External files directory not available")
+        currentCoroutineContext().ensureActive()
+        copyToCancellable(finalApk.inputStream(), externalApk.outputStream())
+
+        // Validate APK integrity after staging to ensure it's a valid Android package and matches expected package name
+        if (!isValidApkFile(externalApk, game.packageName)) {
+            externalApk.delete()
+            throw IllegalStateException("Staged APK is invalid or package name mismatch: ${externalApk.name}")
+        }
+
         externalApk
     }
 
@@ -837,7 +1098,7 @@ class MainRepository(private val context: Context) {
         if (!tempInstallRoot.exists()) return@withContext
         
         val installedPackages = getInstalledPackagesMap()
-        val excludedHashes = excludedReleaseNames.map { md5(it + "\n") }.toSet()
+        val excludedHashes = excludedReleaseNames.map { CryptoUtils.md5(it + "\n") }.toSet()
         
         tempInstallRoot.listFiles()?.forEach { dir ->
             if (!dir.isDirectory) return@forEach
@@ -876,22 +1137,53 @@ class MainRepository(private val context: Context) {
                 Log.e(TAG, "Error verifying install for ${dir.name}", e)
             }
         }
-        
-        context.getExternalFilesDir(null)?.listFiles()?.forEach { file ->
-            if (file.name.endsWith(".apk") && System.currentTimeMillis() - file.lastModified() > 1000 * 60 * 60 * 24) {
-                file.delete()
+
+        // Clean up staged APKs in externalFilesDir
+        // Aligned with packageName.apk naming convention:
+        // 1. Immediately delete staged APK for packages that are already installed
+        // 2. Clean up old staged APKs (older than 24 hours) following the naming convention
+        val externalFilesDir = context.getExternalFilesDir(null)
+        externalFilesDir?.listFiles()?.forEach { file ->
+            if (file.name.endsWith(".apk")) {
+                // Determine package name from filename using our naming convention
+                val fileName = file.name
+                val packageName = fileName.removeSuffix(".apk")
+
+                // Verify this follows our naming convention exactly
+                if (fileName != getStagedApkFileName(packageName)) {
+                    Log.d(TAG, "Cleaning up non-standard staged file: $fileName")
+                    file.delete()
+                    return@forEach
+                }
+
+                // Immediate cleanup: if package is installed, staged APK is no longer needed
+                if (installedPackages.containsKey(packageName)) {
+                    Log.d(TAG, "Cleaning up staged APK for installed package: ${file.name}")
+                    if (!file.delete()) {
+                        Log.w(TAG, "Failed to delete staged APK: ${file.name}")
+                    }
+                } else if (System.currentTimeMillis() - file.lastModified() > 1000 * 60 * 60 * 24) {
+                    // Old staged APK cleanup (24+ hours old) for non-installed packages
+                    Log.d(TAG, "Cleaning up old staged APK (24+ hours): ${file.name}")
+                    if (!file.delete()) {
+                        Log.w(TAG, "Failed to delete staged APK: ${file.name}")
+                    }
+                }
             }
         }
     }
 
     fun cleanupInstall(releaseName: String, totalBytes: Long) {
-        val hash = md5(releaseName + "\n")
+        val hash = CryptoUtils.md5(releaseName + "\n")
         val gameTempDir = File(tempInstallRoot, hash)
         if (!gameTempDir.exists()) return
         gameTempDir.deleteRecursively()
     }
 
     suspend fun deleteDownloadedGame(releaseName: String) = withContext(Dispatchers.IO) {
+        // Cancel any active WorkManager tasks before deleting files
+        cancelDownloadWork(releaseName)
+        
         val safeDirName = releaseName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
         val gameDownloadDir = File(downloadsDir, safeDirName)
         if (gameDownloadDir.exists()) {
@@ -964,7 +1256,11 @@ class MainRepository(private val context: Context) {
                                 input.copyTo(output)
                             }
                         }
-                        if (!isFromDownloads) source.delete()
+                        if (!isFromDownloads) {
+                            if (!source.delete()) {
+                                Log.w(TAG, "Failed to delete source file after copy: ${source.name}")
+                            }
+                        }
                     }
                     MediaScannerConnection.scanFile(context, arrayOf(destFile.absolutePath), null, null)
                 } catch (e: Exception) {
@@ -994,7 +1290,7 @@ class MainRepository(private val context: Context) {
 
     private suspend fun getRemoteLastModified(url: String): String? {
         return try {
-            val request = Request.Builder().url(url).head().header("User-Agent", "rclone/v1.72.1").build()
+            val request = Request.Builder().url(url).head().header("User-Agent", Constants.USER_AGENT).build()
             okHttpClient.newCall(request).await().use { it.header("Last-Modified") }
         } catch (e: Exception) { null }
     }
@@ -1009,11 +1305,6 @@ class MainRepository(private val context: Context) {
         } catch (e: Exception) {
             false
         }
-    }
-
-    private fun md5(input: String): String {
-        val bytes = MessageDigest.getInstance("MD5").digest(input.toByteArray())
-        return bytes.joinToString("") { "%02x".format(it) }
     }
 
     // ==============================
@@ -1178,5 +1469,208 @@ class MainRepository(private val context: Context) {
      */
     suspend fun promoteInQueueAndSetStatus(releaseName: String, status: InstallStatus) = withContext(Dispatchers.IO) {
         db.queuedInstallDao().promoteToFrontAndUpdateStatus(releaseName, status.name)
+    }
+
+    // ==============================
+    // WorkManager Integration (v2.5.0)
+    // ==============================
+
+    /**
+     * Enqueues a download task via WorkManager.
+     * The work will survive app kill and device reboot.
+     *
+     * @param releaseName The unique identifier for the game to download
+     * @param isDownloadOnly If true, skip installation after download
+     * @param keepApk If true, save APK to Downloads folder
+     */
+    fun enqueueDownload(releaseName: String, isDownloadOnly: Boolean, keepApk: Boolean) {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .setRequiresBatteryNotLow(true)
+            .setRequiresStorageNotLow(true)
+            .build()
+
+        val inputData = Data.Builder()
+            .putString(DownloadWorker.KEY_RELEASE_NAME, releaseName)
+            .putBoolean(DownloadWorker.KEY_IS_DOWNLOAD_ONLY, isDownloadOnly)
+            .putBoolean(DownloadWorker.KEY_KEEP_APK, keepApk)
+            .build()
+
+        val downloadRequest = OneTimeWorkRequestBuilder<DownloadWorker>()
+            .setConstraints(constraints)
+            .setInputData(inputData)
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                10000L, // 10 seconds minimum backoff
+                TimeUnit.MILLISECONDS
+            )
+            .addTag("download")
+            .addTag(releaseName)
+            .build()
+
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(
+                "download_$releaseName",
+                ExistingWorkPolicy.KEEP,
+                downloadRequest
+            )
+
+        Log.i(TAG, "Enqueued download work for: $releaseName")
+    }
+
+    /**
+     * Cancels a download work by release name.
+     */
+    fun cancelDownloadWork(releaseName: String) {
+        WorkManager.getInstance(context)
+            .cancelUniqueWork("download_$releaseName")
+        Log.i(TAG, "Cancelled download work for: $releaseName")
+    }
+
+    /**
+     * Gets WorkInfo LiveData for observing download status
+     */
+    fun getDownloadWorkInfoLiveData(releaseName: String): LiveData<List<WorkInfo>> {
+        return WorkManager.getInstance(context)
+            .getWorkInfosForUniqueWorkLiveData("download_$releaseName")
+    }
+
+    /**
+     * Gets WorkInfo Flow for observing download status (Kotlin Coroutines friendly)
+     */
+    fun getDownloadWorkInfoFlow(releaseName: String): Flow<List<WorkInfo>> {
+        return WorkManager.getInstance(context)
+            .getWorkInfosForUniqueWorkLiveData("download_$releaseName")
+            .asFlow()
+    }
+
+    /**
+     * Checks if a download work is currently running or enqueued
+     */
+    suspend fun isDownloadWorkActive(releaseName: String): Boolean = withContext(Dispatchers.IO) {
+        val workInfos = WorkManager.getInstance(context)
+            .getWorkInfosForUniqueWork("download_$releaseName")
+            .get()
+        workInfos.any { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED }
+    }
+
+    /**
+     * Extension to convert LiveData to Flow
+     */
+    @Suppress("NOTHING_TO_INLINE")
+    private inline fun <T> LiveData<T>.asFlow(): Flow<T> =
+        channelFlow {
+            val observer = Observer<T> { value ->
+                trySend(value)
+            }
+            observeForever(observer)
+            try {
+                awaitCancellation()
+            } finally {
+                removeObserver(observer)
+            }
+        }
+
+    // ==============================
+    // Staged APK Utilities (Story 1.11)
+    // ==============================
+
+    /**
+     * Gets the standardized file name for a staged APK.
+     *
+     * This ensures consistent naming across the codebase and prevents
+     * cross-contamination between installation tasks.
+     *
+     * @param packageName The package name of the game
+     * @return The standardized APK file name (e.g., "com.example.game.apk")
+     */
+    fun getStagedApkFileName(packageName: String): String {
+        return "$packageName.apk"
+    }
+
+    /**
+     * Gets the File object for a staged APK.
+     *
+     * @param packageName The package name of the game
+     * @return The File object for the staged APK, or null if external storage is not available
+     */
+    fun getStagedApkFile(packageName: String): File? {
+        val dir = context.getExternalFilesDir(null) ?: return null
+        return File(dir, getStagedApkFileName(packageName))
+    }
+
+    /**
+     * Gets the File object for the staged APK of a package, only if it exists and passes integrity checks.
+     *
+     * @param packageName The package name of the game
+     * @return The validated File object for the staged APK, or null if missing/invalid/mismatched
+     */
+    fun getValidStagedApk(packageName: String): File? {
+        val file = getStagedApkFile(packageName) ?: return null
+        return if (isValidApkFile(file, packageName)) file else null
+    }
+
+    /**
+     * Validates that a file is a valid APK using PackageManager and optionally matches a package name.
+     *
+     * This ensures that staged APK files are actually valid Android packages
+     * and not corrupted, and optionally that they match the expected identity.
+     *
+     * @param apkFile The APK file to validate
+     * @param expectedPackageName Optional: if provided, verifies that the APK's internal package name matches
+     * @return true if the file is a valid APK (and matches expectedPackageName if provided), false otherwise
+     */
+    fun isValidApkFile(apkFile: File, expectedPackageName: String? = null): Boolean {
+        if (!apkFile.exists() || apkFile.length() == 0L) {
+            return false
+        }
+
+        return try {
+            val packageInfo = context.packageManager.getPackageArchiveInfo(
+                apkFile.absolutePath,
+                PackageManager.GET_ACTIVITIES or PackageManager.GET_SERVICES
+            )
+            packageInfo != null && (expectedPackageName == null || packageInfo.packageName == expectedPackageName)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to validate APK file: ${apkFile.name}", e)
+            false
+        }
+    }
+
+    /**
+     * Cleans up all staged APK files from the external files directory.
+     *
+     * This should be called before staging a new APK to prevent cross-contamination.
+     *
+     * @return The number of APK files deleted
+     */
+    fun cleanupStagedApks(): Int = cleanupStagedApks(null)
+
+    /**
+     * Cleans up staged APK files, optionally preserving a specific package's APK.
+     *
+     * @param preservePackageName If specified, the APK for this package will not be deleted
+     * @return The number of APK files deleted
+     */
+    fun cleanupStagedApks(preservePackageName: String?): Int {
+        val externalFilesDir = context.getExternalFilesDir(null) ?: return 0
+        val apkFiles = externalFilesDir.listFiles()?.filter { it.name.endsWith(".apk") } ?: return 0
+
+        var deletedCount = 0
+        apkFiles.forEach { file ->
+            // Preserve the specified package's APK if provided
+            if (preservePackageName != null && file.name == getStagedApkFileName(preservePackageName)) {
+                return@forEach
+            }
+
+            Log.d(TAG, "Cleaning up staged APK: ${file.name}")
+            if (file.delete()) {
+                deletedCount++
+            } else {
+                Log.w(TAG, "Failed to delete staged APK: ${file.name}")
+            }
+        }
+
+        return deletedCount
     }
 }

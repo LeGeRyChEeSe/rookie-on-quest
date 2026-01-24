@@ -334,10 +334,10 @@ class MigrationManagerTest {
         assertEquals("BeatSaber-1.34.5", result[0].releaseName)
         assertEquals("Beat Saber", result[0].gameName)
         assertEquals("DOWNLOADING", result[0].status)
-        assertEquals(0.65f, result[0].progress, 0.01f)
+        assertEquals(0.65f, result[0].progress!!, 0.01f)
         assertEquals(2147483648L, result[0].downloadedBytes)
         assertEquals(3221225472L, result[0].totalBytes)
-        assertFalse(result[0].isDownloadOnly)
+        assertFalse(result[0].isDownloadOnly!!)
     }
 
     @Test
@@ -472,7 +472,7 @@ class MigrationManagerTest {
             Array<MigrationManager.LegacyInstallTaskState>::class.java
         ).toList()
 
-        assertTrue(resultTrue[0].isDownloadOnly)
+        assertTrue(resultTrue[0].isDownloadOnly!!)
 
         // Test with isDownloadOnly = false
         val jsonFalse = """
@@ -499,7 +499,7 @@ class MigrationManagerTest {
             Array<MigrationManager.LegacyInstallTaskState>::class.java
         ).toList()
 
-        assertFalse(resultFalse[0].isDownloadOnly)
+        assertFalse(resultFalse[0].isDownloadOnly!!)
     }
 
     @Test
@@ -527,7 +527,7 @@ class MigrationManagerTest {
         assertNotNull(legacyTask.gameName)
         assertNotNull(legacyTask.packageName)
         assertNotNull(legacyTask.status)
-        assertTrue(legacyTask.progress >= 0f && legacyTask.progress <= 1f)
+        assertTrue(legacyTask.progress!! >= 0f && legacyTask.progress!! <= 1f)
         assertNotNull(legacyTask.totalBytes)
         assertNotNull(legacyTask.queuePosition)
         assertNotNull(legacyTask.createdAt)
