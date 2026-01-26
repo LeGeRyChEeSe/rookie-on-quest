@@ -158,25 +158,27 @@ class DownloadUtilsTest {
     // ========== calculateRequiredStorage Tests ==========
 
     @Test
-    fun calculateRequiredStorage_7z_keepApk_uses_2_9x_multiplier() {
+    fun calculateRequiredStorage_7z_keepApk_uses_3_5x_multiplier() {
+        // 3.5x accounts for: archive parts (1x) + combined.7z (1x for multi-part) + extracted (~1.2x) + APK copy (~0.1-0.3x)
         val totalBytes = 1_000_000_000L // 1 GB
         val result = DownloadUtils.calculateRequiredStorage(
             totalBytes = totalBytes,
             isSevenZArchive = true,
             keepApkOrDownloadOnly = true
         )
-        assertEquals((totalBytes * 2.9).toLong(), result)
+        assertEquals((totalBytes * 3.5).toLong(), result)
     }
 
     @Test
-    fun calculateRequiredStorage_7z_noKeep_uses_1_9x_multiplier() {
+    fun calculateRequiredStorage_7z_noKeep_uses_2_5x_multiplier() {
+        // 2.5x accounts for: archive parts (1x) + combined.7z (1x for multi-part) + extracted (~1.2x)
         val totalBytes = 1_000_000_000L // 1 GB
         val result = DownloadUtils.calculateRequiredStorage(
             totalBytes = totalBytes,
             isSevenZArchive = true,
             keepApkOrDownloadOnly = false
         )
-        assertEquals((totalBytes * 1.9).toLong(), result)
+        assertEquals((totalBytes * 2.5).toLong(), result)
     }
 
     @Test

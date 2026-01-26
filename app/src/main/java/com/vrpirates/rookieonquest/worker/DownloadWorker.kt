@@ -374,15 +374,14 @@ class DownloadWorker(
                 localFile.parentFile?.let { if (!it.exists()) it.mkdirs() }
                 FileOutputStream(localFile, isResume).use { output ->
                     // Use shared download utility for consistent behavior
-                    downloaded = DownloadUtils.downloadWithProgress(
-                        inputStream = input,
-                        outputStream = output,
-                        initialDownloaded = downloaded,
-                        totalBytes = totalBytes,
-                        throttleMs = 500L,
-                        isCancelled = { isStopped },
-                        onProgress = { downloadedBytes, total, progress ->
-                            // Download phase is 0-80%, extraction (handled by MainViewModel) is 80-100%
+                                                        downloaded = DownloadUtils.downloadWithProgress(
+                                                            inputStream = input,
+                                                            outputStream = output,
+                                                            initialDownloaded = downloaded,
+                                                            totalBytes = totalBytes,
+                                                            throttleMs = Constants.PROGRESS_THROTTLE_MS,
+                                                            isCancelled = { isStopped },
+                                                            onProgress = { downloadedBytes, total, progress ->                            // Download phase is 0-80%, extraction (handled by MainViewModel) is 80-100%
                             val scaledProgress = progress * Constants.PROGRESS_DOWNLOAD_PHASE_END
                             updateProgress(releaseName, scaledProgress, downloadedBytes, total)
 
@@ -408,11 +407,14 @@ class DownloadWorker(
     /**
      * Fetches remote segment information from the mirror directory.
      *
-     * NOTE: This logic is intentionally duplicated from MainRepository.getGameRemoteInfo()
-     * due to subtle differences in error handling and context requirements:
-     * - DownloadWorker runs in WorkManager background context
+     * SHARED CODE: Uses DownloadUtils for common operations:
+     * - DownloadUtils.HREF_REGEX, shouldSkipEntry(), isDownloadableFile()
+     * - DownloadUtils.headRequestSemaphore for rate limiting
+     *
+     * INTENTIONALLY SEPARATE from MainRepository.getGameRemoteInfo() because:
+     * - DownloadWorker runs in WorkManager background context with retry semantics
      * - MainRepository runs in UI coroutine context with additional metadata fetching
-     * - Extracting to shared utility would require complex parameterization and reduce readability
+     * - Error handling differs (Worker retries, Repository propagates to UI)
      *
      * If modifying this method, also review MainRepository.getGameRemoteInfo() for consistency.
      */

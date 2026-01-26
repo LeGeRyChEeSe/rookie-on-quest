@@ -44,10 +44,10 @@ development_status:
   1-3-workmanager-download-task-integration: done
   1-4-download-queue-ui-with-persist-resume: done
   1-5-http-range-resumption-for-interrupted-downloads: done
-  1-6-7z-extraction-with-progress-tracking: backlog
+  1-6-7z-extraction-with-progress-tracking: done
   1-7-apk-installation-with-fileprovider: backlog
   1-8-sequential-permission-flow: backlog
-  1-9-installation-history-tracking: ready-for-dev
+  1-9-installation-history-tracking: done
   1-10-fix-queue-processor-stateflow-race-condition: done
   1-11-fix-staged-apk-cross-contamination: review
   epic-1-retrospective: optional

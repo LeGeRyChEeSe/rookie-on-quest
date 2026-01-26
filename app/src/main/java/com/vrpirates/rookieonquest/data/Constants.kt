@@ -75,14 +75,8 @@ object Constants {
      * Progress scaling factor for download phase within DownloadWorker.
      * Download progress (0.0-1.0) is scaled to 0.0-0.8 of total installation progress.
      *
-     * NOTE: There is intentionally a 2% gap between PROGRESS_DOWNLOAD_PHASE_END (0.8)
-     * and PROGRESS_MILESTONE_EXTRACTION_START (0.82). This gap represents the
-     * "Preparing files..." phase where:
-     * - Multi-part 7z files are merged
-     * - Download temp files are verified
-     * - Extraction directory is prepared
-     *
-     * Progress flow: Download (0-80%) → Preparing (80-82%) → Extraction (82-100%)
+     * Progress flow: Download (0-80%) → Merging (80-82%) → Extraction (85-100%)
+     * The extraction phase includes smooth progress updates for visual continuity.
      */
     const val PROGRESS_DOWNLOAD_PHASE_END = 0.8f
 
@@ -107,22 +101,38 @@ object Constants {
     const val PROGRESS_MILESTONE_VERIFYING = 0.02f
 
     /**
-     * Progress milestone for extraction phase start (82%).
-     * Download phase occupies 0-82%, extraction occupies 82-100%.
+     * Progress milestone for extraction phase start (80%).
+     * Immediately follows download phase for smooth visual transition.
+     * Download phase occupies 0-80%, extraction occupies 80-100%.
      */
-    const val PROGRESS_MILESTONE_EXTRACTION_START = 0.82f
+    const val PROGRESS_MILESTONE_EXTRACTION_START = 0.80f
 
     /**
-     * Progress milestone for file merging (85%).
+     * Progress milestone for file merging (81%).
      * Used for multi-part 7z archives before extraction.
      */
-    const val PROGRESS_MILESTONE_MERGING = 0.85f
+    const val PROGRESS_MILESTONE_MERGING = 0.81f
 
     /**
-     * Progress milestone for extraction (88%).
+     * Progress milestone for extraction (85%).
      * Actual 7z extraction happens at this stage.
+     * Extraction spans 85-92% for monotonic progress (not 85-100% which causes backwards jump).
      */
-    const val PROGRESS_MILESTONE_EXTRACTING = 0.88f
+    const val PROGRESS_MILESTONE_EXTRACTING = 0.85f
+
+    /**
+     * Progress milestone for extraction completion (92%).
+     * Marks the end of 7z extraction phase before OBB/APK installation.
+     * This ensures monotonic progress: 85% (extract start) → 92% (extract end) → 93% (prepare) → 94% (OBB) → 96% (APK).
+     */
+    const val PROGRESS_MILESTONE_EXTRACTION_END = 0.92f
+
+    /**
+     * Progress milestone for preparing installation (93%).
+     * Transitional phase between extraction and OBB/APK installation.
+     * Bridges the gap from extraction end (92%) to OBB installation (94%).
+     */
+    const val PROGRESS_MILESTONE_PREPARING_INSTALL = 0.93f
 
     /**
      * Progress milestone for OBB installation (94%).
@@ -147,6 +157,20 @@ object Constants {
      * Files older than this are considered stale and eligible for cleanup.
      */
     const val STAGED_APK_MAX_AGE_MS = 1000 * 60 * 60 * 24L
+
+    /**
+     * Minimum estimated APK size for space checks (500 MB).
+     * Used when exact APK size is unknown during pre-flight space verification.
+     * APK is staged to externalFilesDir before installation, requiring external storage space.
+     */
+    const val MIN_ESTIMATED_APK_SIZE = 500L * 1024L * 1024L
+
+    /**
+     * Throttle interval for extraction progress updates (in milliseconds).
+     * Extraction progress updates at minimum 1Hz as required by NFR-P10.
+     * This value (1000ms) ensures updates happen at least once per second.
+     */
+    const val EXTRACTION_PROGRESS_THROTTLE_MS = 1000L
 }
 
 /**
@@ -282,21 +306,49 @@ object DownloadUtils {
 
     /**
      * Storage space multiplier for 7z archives when keeping APK/download-only.
-     * 7z archives need ~2.9x space: original archive + extracted content + APK copy
+     * Multi-part 7z archives need ~3.5x space:
+     *   - Original archive parts (1x)
+     *   - combined.7z during merge (1x for multi-part)
+     *   - Extracted content (~1.2x, varies by compression)
+     *   - APK copy to externalFilesDir (~0.1-0.3x)
+     * Provides a safer buffer than 3.2x for large games.
      */
-    const val STORAGE_MULTIPLIER_7Z_KEEP_APK = 2.9
+    const val STORAGE_MULTIPLIER_7Z_KEEP_APK = 3.5
 
     /**
      * Storage space multiplier for 7z archives without keeping APK.
-     * 7z archives need ~1.9x space: original archive + extracted content
+     * Multi-part 7z archives need ~2.5x space:
+     *   - Original archive parts (1x)
+     *   - combined.7z during merge (1x for multi-part)
+     *   - Extracted content (~1.2x, varies by compression)
+     * Provides a safer buffer than 2.2x for large games.
      */
-    const val STORAGE_MULTIPLIER_7Z_NO_KEEP = 1.9
+    const val STORAGE_MULTIPLIER_7Z_NO_KEEP = 2.5
 
     /**
      * Storage space multiplier for non-archived files (direct APK/OBB).
      * Small buffer (1.1x) for file system overhead and temp files.
      */
     const val STORAGE_MULTIPLIER_NON_ARCHIVE = 1.1
+
+    /**
+     * Storage space multiplier for OBB files during installation (1.0x).
+     * OBB files are moved or copied to /Android/obb, requiring their own space
+     * on the external storage partition.
+     */
+    const val STORAGE_MULTIPLIER_OBB = 1.0
+
+    /**
+     * Calculates the estimated storage space required for OBB files.
+     * @param remoteSegments Map of remote files and their sizes
+     * @param packageName The package name to identify OBB folder
+     * @return Estimated bytes required for OBB installation
+     */
+    fun calculateRequiredObbStorage(remoteSegments: Map<String, Long>, packageName: String): Long {
+        return remoteSegments.entries
+            .filter { (name, _) -> name.contains(packageName) || name.endsWith(".obb", ignoreCase = true) }
+            .sumOf { if (it.value > 0) it.value else 0L }
+    }
 
     /**
      * Calculates the estimated storage space required for a download.

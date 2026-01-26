@@ -6,6 +6,7 @@ import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import com.vrpirates.rookieonquest.logic.CatalogParser
@@ -120,7 +121,7 @@ class MainRepository(private val context: Context) {
             try {
                 downloadFile(metaUrl, tempMetaFile)
 
-                val passwordsToTry = listOfNotNull(decodedPassword, cachedConfig?.password64, null)
+                val passwordsToTry = listOfNotNull(decodedPassword, cachedConfig?.password64, null).distinct()
                 var gameListContent = ""
                 var success = false
 
@@ -170,38 +171,39 @@ class MainRepository(private val context: Context) {
     private fun extractMetaToCache(file: File, password: String?, onGameListFound: (String) -> Unit) {
         val builder = SevenZFile.builder().setFile(file)
         if (password != null) builder.setPassword(password.toCharArray())
-        
+
         builder.get().use { sevenZFile ->
+            // Reuse buffer across all file extractions to reduce GC pressure (Code Review fix)
+            val sharedBuffer = ByteArray(DownloadUtils.DOWNLOAD_BUFFER_SIZE)
             var entry = sevenZFile.nextEntry
             while (entry != null) {
                 val entryName = entry.name.lowercase()
                 if (entryName.endsWith("vrp-gamelist.txt")) {
                     val out = java.io.ByteArrayOutputStream()
-                    val buffer = ByteArray(8192)
                     var bytesRead: Int
-                    while (sevenZFile.read(buffer).also { bytesRead = it } != -1) {
-                        out.write(buffer, 0, bytesRead)
+                    while (sevenZFile.read(sharedBuffer).also { bytesRead = it } != -1) {
+                        out.write(sharedBuffer, 0, bytesRead)
                     }
-                    val content = out.toString("UTF-8")
+                    val content = out.toString(Charsets.UTF_8)
                     catalogCacheFile.writeText(content)
                     onGameListFound(content)
                 } else if (entryName.contains("/thumbnails/")) {
                     val fileName = entry.name.substringAfterLast("/")
                     if (fileName.isNotEmpty()) {
                         val targetFile = File(thumbnailsDir, fileName)
-                        saveEntryToFile(sevenZFile, targetFile)
+                        saveEntryToFile(sevenZFile, targetFile, sharedBuffer)
                     }
                 } else if (entryName.contains("/notes/")) {
                     val fileName = entry.name.substringAfterLast("/")
                     if (fileName.isNotEmpty()) {
                         val targetFile = File(notesDir, fileName)
-                        saveEntryToFile(sevenZFile, targetFile)
+                        saveEntryToFile(sevenZFile, targetFile, sharedBuffer)
                     }
                 } else if (entryName.endsWith(".png") || entryName.endsWith(".jpg")) {
                     val fileName = entry.name.substringAfterLast("/")
                     val iconFile = File(iconsDir, fileName)
                     if (!iconFile.exists()) {
-                        saveEntryToFile(sevenZFile, iconFile)
+                        saveEntryToFile(sevenZFile, iconFile, sharedBuffer)
                     }
                 }
                 entry = sevenZFile.nextEntry
@@ -209,9 +211,16 @@ class MainRepository(private val context: Context) {
         }
     }
 
-    private fun saveEntryToFile(sevenZFile: SevenZFile, targetFile: File) {
+    /**
+     * Extracts a single entry from a SevenZFile to a target file.
+     * Uses a shared buffer to reduce GC pressure when extracting multiple files.
+     *
+     * @param sevenZFile The 7z archive being extracted from
+     * @param targetFile The destination file to write to
+     * @param buffer Reusable buffer for I/O operations (uses DownloadUtils.DOWNLOAD_BUFFER_SIZE)
+     */
+    private fun saveEntryToFile(sevenZFile: SevenZFile, targetFile: File, buffer: ByteArray) {
         FileOutputStream(targetFile).use { out ->
-            val buffer = ByteArray(8192)
             var bytesRead: Int
             while (sevenZFile.read(buffer).also { bytesRead = it } != -1) {
                 out.write(buffer, 0, bytesRead)
@@ -246,7 +255,8 @@ class MainRepository(private val context: Context) {
     }
 
     private suspend fun copyToCancellable(input: InputStream, output: OutputStream) {
-        val buffer = ByteArray(8192 * 8)
+        // Use standardized buffer size from DownloadUtils for consistency (Code Review fix: magic number)
+        val buffer = ByteArray(DownloadUtils.DOWNLOAD_BUFFER_SIZE)
         var bytesRead: Int
         while (true) {
             currentCoroutineContext().ensureActive()
@@ -274,10 +284,16 @@ class MainRepository(private val context: Context) {
     /**
      * Fetches remote game information including segment sizes, descriptions, and screenshots.
      *
-     * NOTE: The segment fetching logic in this method is intentionally duplicated from
-     * DownloadWorker.fetchRemoteSegments() due to subtle differences in requirements:
-     * - This method also fetches metadata (descriptions, screenshots)
-     * - Different error handling for UI vs background contexts
+     * SHARED CODE: The following utilities are shared with DownloadWorker via DownloadUtils:
+     * - DownloadUtils.HREF_REGEX: HTML href parsing
+     * - DownloadUtils.shouldSkipEntry(): Entry filtering logic
+     * - DownloadUtils.isDownloadableFile(): File type detection
+     * - DownloadUtils.headRequestSemaphore: Rate limiting for HEAD requests
+     * - DownloadUtils.downloadWithProgress(): Progress-reporting file download
+     *
+     * INTENTIONALLY SEPARATE: The method structure remains separate from DownloadWorker because:
+     * - This method also fetches metadata (descriptions, screenshots) which Worker doesn't need
+     * - Different error handling for UI vs background contexts (propagate vs retry)
      * - DownloadWorker needs simpler error recovery for WorkManager retries
      *
      * If modifying segment fetching logic, also review DownloadWorker.fetchRemoteSegments()
@@ -452,7 +468,8 @@ class MainRepository(private val context: Context) {
     private fun checkAvailableSpace(
         requiredBytes: Long,
         hasUnknownSizes: Boolean = false,
-        checkExternalStorage: Boolean = false
+        checkExternalStorage: Boolean = false,
+        estimatedApkSize: Long = 0L
     ) {
         // CRITICAL: Check space on filesDir partition where tempInstallRoot writes to
         // Consistency with DownloadWorker is essential to prevent false positives/negatives
@@ -472,26 +489,30 @@ class MainRepository(private val context: Context) {
         if (availableBytes < effectiveRequired) {
             val requiredMb = effectiveRequired / (1024 * 1024)
             val availableMb = availableBytes / (1024 * 1024)
-            throw Exception("Insufficient storage space on internal partition. Need ${requiredMb}MB, but only ${availableMb}MB available.")
+            throw InsufficientStorageException(requiredMb, availableMb)
         }
 
-        // Check external storage (downloadsDir) for download-only and keep-apk modes
-        // These modes save APKs to external storage, so we need to verify that space too
-        if (checkExternalStorage) {
-            try {
-                val externalStat = StatFs(downloadsDir.path)
+        // Check external storage for APK staging (externalFilesDir) and downloads (downloadsDir)
+        // APK staging always happens during installation - the APK is copied to externalFilesDir
+        // before launching the installer via FileProvider
+        val apkStagingRequired = if (estimatedApkSize > 0) estimatedApkSize else Constants.MIN_ESTIMATED_APK_SIZE
+        val externalRequired = if (checkExternalStorage) effectiveRequired else apkStagingRequired
+
+        try {
+            val externalFilesDir = context.getExternalFilesDir(null)
+            if (externalFilesDir != null) {
+                val externalStat = StatFs(externalFilesDir.path)
                 val externalAvailable = externalStat.availableBlocksLong * externalStat.blockSizeLong
 
-                if (externalAvailable < effectiveRequired) {
-                    val requiredMb = effectiveRequired / (1024 * 1024)
+                if (externalAvailable < externalRequired) {
+                    val requiredMb = externalRequired / (1024 * 1024)
                     val availableMb = externalAvailable / (1024 * 1024)
-                    throw Exception("Insufficient storage space on external storage. Need ${requiredMb}MB, but only ${availableMb}MB available.")
+                    throw InsufficientStorageException(requiredMb, availableMb)
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not check external storage space for $downloadsDir", e)
-                // Don't fail on external storage check errors - the device might not have external storage
-                // or the downloadsDir might not be accessible yet
             }
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Could not check external storage space", e)
+            // Don't fail on external storage check errors - the device might not have external storage
         }
 
         // Log warning if we're proceeding with unknown sizes but minimal space check passed
@@ -531,12 +552,16 @@ class MainRepository(private val context: Context) {
         }
 
         // 2. Fetch remote file info (skip HEAD requests if coming from WorkManager handoff)
-        val remoteSegments: Map<String, Long>
-        val totalBytes: Long
+        // Refactored to avoid recursion: use local flag to track whether we need server fallback
+        var remoteSegments: Map<String, Long>
+        var totalBytes: Long
+        var useServerVerification = !skipRemoteVerification
 
         if (skipRemoteVerification) {
             // WorkManager already downloaded files - verify locally instead of making HEAD requests
-            onProgress("Preparing extraction...", Constants.PROGRESS_MILESTONE_VERIFYING, 0, 0)
+            // Use EXTRACTION_START (80%) instead of VERIFYING (2%) to prevent visual progress regression
+            // after download phase (80%) completes - seamless transition to extraction phase
+            onProgress("Preparing extraction...", Constants.PROGRESS_MILESTONE_EXTRACTION_START, 0, 0)
             val hash = CryptoUtils.md5(game.releaseName + "\n")
             val gameTempDir = File(tempInstallRoot, hash)
 
@@ -550,16 +575,23 @@ class MainRepository(private val context: Context) {
                     }
                 }
             }
+
+            if (localSegments.isEmpty()) {
+                // No local files found - fall back to server verification (non-recursive approach)
+                Log.w(TAG, "No local files found for ${game.releaseName}, falling back to server verification")
+                useServerVerification = true
+            }
+
             remoteSegments = localSegments
             totalBytes = localSegments.values.sum()
-
-            if (remoteSegments.isEmpty()) {
-                // Fallback to server verification if no local files found
-                Log.w(TAG, "No local files found for ${game.releaseName}, falling back to server verification")
-                return@withContext installGame(game, keepApk, downloadOnly, skipRemoteVerification = false, onProgress)
-            }
         } else {
-            // Standard path: fetch ground truth from server
+            // Initialize with empty values - will be populated below
+            remoteSegments = emptyMap()
+            totalBytes = 0L
+        }
+
+        // Server verification path (either primary or fallback)
+        if (useServerVerification) {
             onProgress("Verifying with server...", Constants.PROGRESS_MILESTONE_VERIFYING, 0, 0)
             val result = getGameRemoteInfo(game)
             remoteSegments = result.first
@@ -576,8 +608,23 @@ class MainRepository(private val context: Context) {
             isSevenZArchive = isSevenZ,
             keepApkOrDownloadOnly = downloadOnly || keepApk
         )
-        // Check internal storage (for temp files) and external storage (for download-only/keep-apk modes)
-        checkAvailableSpace(estimatedRequired, hasUnknownSizes, checkExternalStorage = downloadOnly || keepApk)
+        // Estimate OBB space requirements (Code Review fix)
+        val estimatedObbRequired = if (!downloadOnly) {
+            DownloadUtils.calculateRequiredObbStorage(remoteSegments, game.packageName)
+        } else 0L
+
+        // Estimate APK size from segments (for external storage check)
+        // APK is staged to externalFilesDir before installation via FileProvider
+        val estimatedApkSize = remoteSegments.entries
+            .filter { it.key.endsWith(".apk", ignoreCase = true) }
+            .maxOfOrNull { it.value } ?: 0L
+        // Check internal storage (for temp files) and external storage (for APK staging + OBB + download-only/keep-apk modes)
+        checkAvailableSpace(
+            requiredBytes = estimatedRequired,
+            hasUnknownSizes = hasUnknownSizes,
+            checkExternalStorage = downloadOnly || keepApk || estimatedObbRequired > 0,
+            estimatedApkSize = estimatedApkSize + estimatedObbRequired
+        )
 
         val hash = CryptoUtils.md5(game.releaseName + "\n")
         val gameTempDir = File(tempInstallRoot, hash)
@@ -800,71 +847,238 @@ class MainRepository(private val context: Context) {
             val isArchive = remoteSegments.keys.any { it.contains(".7z") }
             
             if (!isArchive) {
-                remoteSegments.keys.forEach { seg ->
+                // Non-archive files: copy with progress reporting
+                // Progress spans 80-92% for monotonic progress (not 80-100% which causes backwards jump to OBB 94%, APK 96%)
+                val segmentList = remoteSegments.keys.toList()
+                val totalFilesBytes = remoteSegments.values.filter { it > 0 }.sum()
+                var copiedBytes = 0L
+                val copyPhaseSpan = Constants.PROGRESS_MILESTONE_EXTRACTION_END - Constants.PROGRESS_MILESTONE_EXTRACTION_START
+
+                segmentList.forEachIndexed { index, seg ->
                     currentCoroutineContext().ensureActive()
                     val source = File(gameTempDir, seg)
                     val target = File(extractionDir, seg)
                     if (source.exists()) {
                         target.parentFile?.let { if (!it.exists()) it.mkdirs() }
-                        copyToCancellable(source.inputStream(), target.outputStream())
+
+                        // Report progress per file
+                        val fileProgress = if (totalFilesBytes > 0) {
+                            copiedBytes.toFloat() / totalFilesBytes
+                        } else {
+                            index.toFloat() / segmentList.size
+                        }
+                        val scaledProgress = Constants.PROGRESS_MILESTONE_EXTRACTION_START +
+                                (fileProgress * copyPhaseSpan)
+                        onProgress(
+                            "Copying ${index + 1}/${segmentList.size}...",
+                            scaledProgress,
+                            copiedBytes,
+                            totalFilesBytes
+                        )
+
+                        // Use .use { } blocks to ensure streams are properly closed (Code Review fix: resource leak)
+                        source.inputStream().use { input ->
+                            target.outputStream().use { output ->
+                                copyToCancellable(input, output)
+                            }
+                        }
+                        copiedBytes += source.length()
                     }
                 }
+
+                // Final progress update - stop at EXTRACTION_END (92%) to allow monotonic progress to OBB (94%) and APK (96%)
+                onProgress("Copying complete", Constants.PROGRESS_MILESTONE_EXTRACTION_END, totalFilesBytes, totalFilesBytes)
                 extractionMarker.createNewFile()
             } else {
                 val combinedFile = File(gameTempDir, "combined.7z")
                 val archiveParts = remoteSegments.filter { it.key.contains(".7z") }
                 val archiveTotalBytes = archiveParts.values.sum()
 
-                if (!combinedFile.exists() || combinedFile.length() < archiveTotalBytes) {
-                    onProgress("Merging files...", Constants.PROGRESS_MILESTONE_MERGING, totalBytes, totalBytes)
-                    combinedFile.outputStream().use { out ->
-                        // Ensure correct order for merge and that files exist
-                        archiveParts.keys
-                            .sortedWith(compareBy { it })
-                            .forEach { seg -> 
+                // Acquire CPU wake lock BEFORE merge and extraction to prevent Quest sleep (NFR-P11, FR55)
+                // Merging large multi-part archives can take several minutes.
+                WakeLockManager.acquire(context)
+                try {
+                    if (!combinedFile.exists() || combinedFile.length() < archiveTotalBytes) {
+                        onProgress("Merging files...", Constants.PROGRESS_MILESTONE_MERGING, totalBytes, totalBytes)
+
+                        // Sort archive parts using natural/numeric sorting for robustness (AC: 3, FR23)
+                        // This handles both zero-padded (.001, .002) and non-padded (.1, .2, .10) formats.
+                        val sortedParts = archiveParts.keys.sortedWith(compareBy<String> { it.substringBeforeLast(".7z") }
+                            .thenBy { it.substringAfterLast(".7z.").toIntOrNull() ?: 0 }
+                            .thenBy { it })
+                        Log.d(TAG, "Merging ${sortedParts.size} archive parts in order: ${sortedParts.joinToString(", ")}")
+
+                        var mergedBytes = 0L
+                        combinedFile.outputStream().use { out ->
+                            sortedParts.forEachIndexed { index, seg ->
                                 currentCoroutineContext().ensureActive()
                                 val partFile = File(gameTempDir, seg)
                                 if (!partFile.exists()) throw Exception("Part file missing: $seg")
+
+                                // Report merge progress (AC: 3)
+                                val mergeProgress = index.toFloat() / sortedParts.size
+                                val scaledProgress = Constants.PROGRESS_MILESTONE_MERGING +
+                                        (mergeProgress * (Constants.PROGRESS_MILESTONE_EXTRACTING - Constants.PROGRESS_MILESTONE_MERGING))
+                                onProgress(
+                                    "Merging part ${index + 1}/${sortedParts.size}...",
+                                    scaledProgress,
+                                    mergedBytes,
+                                    archiveTotalBytes
+                                )
+
                                 partFile.inputStream().use { input ->
                                     copyToCancellable(input, out)
                                 }
+                                mergedBytes += partFile.length()
                             }
+                        }
+                        // Final merge progress to reach EXTRACTING milestone (85%) smoothly
+                        onProgress("Merge complete", Constants.PROGRESS_MILESTONE_EXTRACTING, archiveTotalBytes, archiveTotalBytes)
+                        Log.d(TAG, "Archive merge complete: $mergedBytes bytes")
                     }
-                }
-                
-                onProgress("Extracting...", Constants.PROGRESS_MILESTONE_EXTRACTING, totalBytes, totalBytes)
-                val password = decodedPassword ?: ""
-                try {
+
+                    // Note: Skip separate "Preparing extraction" call here - merge already ended at 85%
+                    // The counting phase will maintain 85% until extraction starts
+                    val password = decodedPassword ?: ""
+
                     SevenZFile.builder().setFile(combinedFile).setPassword(password.toCharArray()).get().use { sevenZFile ->
+                        // Count total entries for progress calculation (Story 1.6)
+                        // SevenZFile.entries provides an Iterable that can be iterated without consuming entries
+                        var totalEntryBytes = 0L
+                        var totalEntryCount = 0
+                        sevenZFile.entries.forEachIndexed { index, entry ->
+                            totalEntryBytes += entry.size
+                            totalEntryCount++
+                            // Update progress during counting for large archives (Code Review fix)
+                            // Stays at EXTRACTING (85%) - counting is part of extraction phase, not a step back
+                            if (index % 100 == 0) {
+                                currentCoroutineContext().ensureActive()
+                                onProgress("Analyzing archive...", Constants.PROGRESS_MILESTONE_EXTRACTING, 0, 0)
+                            }
+                        }
+                        // Use entry count as fallback for archives with only zero-byte entries (e.g., directories only)
+                        // This prevents progress from freezing at 85% when totalEntryBytes = 0
+                        val useEntryCount = totalEntryBytes == 0L && totalEntryCount > 0
+
+                        var extractedBytes = 0L
+                        var extractedEntryCount = 0
+                        var lastProgressUpdateMs = 0L
+                        // Extraction spans 85-92% for monotonic progress (not 85-100% which causes backwards jump to 94%/96% for OBB/APK)
+                        val extractionPhaseSpan = Constants.PROGRESS_MILESTONE_EXTRACTION_END - Constants.PROGRESS_MILESTONE_EXTRACTING
+                        // Reuse buffer across all files to reduce GC pressure (Code Review fix)
+                        val extractionBuffer = ByteArray(DownloadUtils.DOWNLOAD_BUFFER_SIZE)
+                        // Cache canonical path outside loop to avoid repeated IO calls (Code Review fix: performance)
+                        val canonicalExtractDir = extractionDir.canonicalPath
+
                         var entry = sevenZFile.nextEntry
                         while (entry != null) {
                             currentCoroutineContext().ensureActive()
                             // Keep APK, OBB and EVERYTHING ELSE (important for Quake3Quest style structures)
                             val outFile = File(extractionDir, entry.name)
+
+                            // Zip Slip vulnerability protection: Validate that the resolved path
+                            // is within the extraction directory to prevent directory traversal attacks
+                            val canonicalOutFile = outFile.canonicalPath
+                            if (!canonicalOutFile.startsWith(canonicalExtractDir + File.separator) &&
+                                canonicalOutFile != canonicalExtractDir) {
+                                val errorMsg = "Zip Slip detected! Malicious entry: ${entry.name}"
+                                Log.e(TAG, errorMsg)
+                                // Fail loudly instead of skipping silently to prevent broken installations (Adversarial Review fix)
+                                throw IOException(errorMsg)
+                            }
+
                             if (entry.isDirectory) outFile.mkdirs()
                             else {
                                 outFile.parentFile?.let { if (!it.exists()) it.mkdirs() }
                                 FileOutputStream(outFile).use { out ->
-                                    val buffer = ByteArray(8192 * 8)
                                     var bytesRead: Int
                                     while (true) {
                                         currentCoroutineContext().ensureActive()
-                                        bytesRead = sevenZFile.read(buffer)
+                                        bytesRead = sevenZFile.read(extractionBuffer)
                                         if (bytesRead == -1) break
-                                        out.write(buffer, 0, bytesRead)
+                                        out.write(extractionBuffer, 0, bytesRead)
+
+                                        // Track actual bytes extracted for progress (NFR-P10 fix)
+                                        // Update inside loop to prevent UI freeze during large file extraction
+                                        extractedBytes += bytesRead
+                                        // Use monotonic clock for throttling to avoid issues with system time changes
+                                        val now = SystemClock.elapsedRealtime()
+                                        if (now - lastProgressUpdateMs >= Constants.EXTRACTION_PROGRESS_THROTTLE_MS) {
+                                            // Use entry count as fallback for zero-byte archives
+                                            val extractionProgress = when {
+                                                useEntryCount -> extractedEntryCount.toFloat() / totalEntryCount
+                                                totalEntryBytes > 0 -> extractedBytes.toFloat() / totalEntryBytes
+                                                else -> 0f
+                                            }
+                                            // Scale extraction progress: 85-92% of total (monotonic before OBB at 94%, APK at 96%)
+                                            val scaledProgress = Constants.PROGRESS_MILESTONE_EXTRACTING +
+                                                    (extractionProgress * extractionPhaseSpan)
+                                            onProgress(
+                                                "Extracting... ${(extractionProgress * 100).toInt()}%",
+                                                scaledProgress,
+                                                extractedBytes,
+                                                totalEntryBytes
+                                            )
+                                            lastProgressUpdateMs = now
+                                        }
                                     }
                                 }
                             }
+
+                            // Increment entry counter for progress tracking (used as fallback for zero-byte archives)
+                            extractedEntryCount++
                             entry = sevenZFile.nextEntry
+                        }
+
+                        // Final progress update to ensure we reach EXTRACTION_END milestone
+                        // This handles cases where the last chunk didn't trigger a throttled update
+                        onProgress(
+                            "Extraction complete",
+                            Constants.PROGRESS_MILESTONE_EXTRACTION_END,
+                            extractedBytes,
+                            totalEntryBytes
+                        )
+
+                        // Log if extraction took >2 minutes (NFR-P11 compliance)
+                        if (WakeLockManager.hasExceededTwoMinutes()) {
+                            Log.i(TAG, "Extraction completed after ${WakeLockManager.getHeldDurationMs() / 1000}s (wake lock held)")
                         }
                     }
                     extractionMarker.createNewFile()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Extraction failed", e)
+                } catch (e: CancellationException) {
+                    // Propagate cancellation without logging as error
+                    Log.d(TAG, "Extraction cancelled")
+                    extractionMarker.delete() // Clean up marker if partially done
                     extractionDir.deleteRecursively()
-                    throw Exception("Extraction failed: ${e.message}")
+                    throw e
+                } catch (e: Exception) {
+                    // Detect specific error types for user-friendly messages (AC: 7)
+                    val errorMessage = e.message?.lowercase() ?: ""
+                    val userMessage = when {
+                        errorMessage.contains("zip slip") -> "Extraction failed: Security violation detected"
+                        errorMessage.contains("password") || errorMessage.contains("crypt") ->
+                            "Extraction failed: Wrong password or encrypted archive"
+                        errorMessage.contains("space") || errorMessage.contains("full") ||
+                            errorMessage.contains("enospc") ->
+                            "Extraction failed: Not enough storage space"
+                        errorMessage.contains("corrupt") || errorMessage.contains("invalid") ||
+                            errorMessage.contains("damaged") || errorMessage.contains("crc") ->
+                            "Extraction failed: Archive is corrupted"
+                        else -> "Extraction failed: ${e.message}"
+                    }
+
+                    Log.e(TAG, "Extraction failed: $userMessage", e)
+
+                    // Clean up temp files on failure (NFR-R7)
+                    extractionMarker.delete() // Clean up marker if partially done
+                    extractionDir.deleteRecursively()
+                    throw Exception(userMessage)
                 } finally {
-                    if (combinedFile.exists()) combinedFile.delete()
+                    // Always clean up combined.7z even on success or failure (Code Review fix)
+                    val combinedFileToDelete = File(gameTempDir, "combined.7z")
+                    if (combinedFileToDelete.exists()) combinedFileToDelete.delete()
+                    // Always release wake lock in finally block (covers success, failure, cancel)
+                    WakeLockManager.release()
                 }
             }
         }
@@ -1011,6 +1225,9 @@ class MainRepository(private val context: Context) {
             return@withContext null
         }
 
+        // Transitional milestone to bridge gap from extraction (92%) to OBB installation (94%)
+        onProgress("Preparing installation...", Constants.PROGRESS_MILESTONE_PREPARING_INSTALL, totalBytes, totalBytes)
+
         // Apply special moves (e.g. Quake3Quest data folders)
         if (specialMoves.isNotEmpty()) {
             onProgress("Installing Special Data...", Constants.PROGRESS_MILESTONE_INSTALLING_OBBS, totalBytes, totalBytes)
@@ -1021,7 +1238,7 @@ class MainRepository(private val context: Context) {
 
         val hasObbs = packageFolder != null || looseObbs.isNotEmpty()
         if (hasObbs) {
-            onProgress("Installing OBBs...", Constants.PROGRESS_MILESTONE_LAUNCHING_INSTALLER, totalBytes, totalBytes)
+            onProgress("Installing OBBs...", Constants.PROGRESS_MILESTONE_INSTALLING_OBBS, totalBytes, totalBytes)
             moveObbFiles(packageFolder, looseObbs, game.packageName)
         }
 
@@ -1037,6 +1254,9 @@ class MainRepository(private val context: Context) {
              throw Exception("Final APK not found for installation")
         }
 
+        // Progress milestone for APK staging (96%)
+        onProgress("Preparing APK...", Constants.PROGRESS_MILESTONE_LAUNCHING_INSTALLER, totalBytes, totalBytes)
+
         // Clean up any existing APK files in externalFilesDir to prevent cross-contamination
         val deletedCount = cleanupStagedApks()
         if (deletedCount > 0) {
@@ -1047,7 +1267,12 @@ class MainRepository(private val context: Context) {
         val externalApk = getStagedApkFile(game.packageName)
             ?: throw IllegalStateException("External files directory not available")
         currentCoroutineContext().ensureActive()
-        copyToCancellable(finalApk.inputStream(), externalApk.outputStream())
+        // Use .use { } blocks to ensure streams are properly closed (Code Review fix: resource leak)
+        finalApk.inputStream().use { input ->
+            externalApk.outputStream().use { output ->
+                copyToCancellable(input, output)
+            }
+        }
 
         // Validate APK integrity after staging to ensure it's a valid Android package and matches expected package name
         if (!isValidApkFile(externalApk, game.packageName)) {
@@ -1234,7 +1459,33 @@ class MainRepository(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Permission error creating OBB dir", e)
         }
-        
+
+        // Calculate total bytes needed for OBB copy
+        var totalObbBytes = 0L
+        packageFolder?.walkTopDown()?.filter { it.isFile && !it.name.endsWith(".apk", true) }
+            ?.forEach { totalObbBytes += it.length() }
+        looseObbs.forEach { totalObbBytes += it.length() }
+
+        // Check available space on OBB partition before copying
+        if (totalObbBytes > 0) {
+            try {
+                val obbPartitionPath = Environment.getExternalStorageDirectory().path
+                val stat = StatFs(obbPartitionPath)
+                val availableBytes = stat.availableBlocksLong * stat.blockSizeLong
+
+                if (availableBytes < totalObbBytes) {
+                    val requiredMb = totalObbBytes / (1024 * 1024)
+                    val availableMb = availableBytes / (1024 * 1024)
+                    Log.e(TAG, "Insufficient space for OBB files: need ${requiredMb}MB, have ${availableMb}MB")
+                    throw InsufficientStorageException(requiredMb, availableMb)
+                }
+                Log.d(TAG, "OBB space check passed: ${totalObbBytes / (1024 * 1024)}MB needed, ${availableBytes / (1024 * 1024)}MB available")
+            } catch (e: IllegalArgumentException) {
+                // StatFs can throw if path is invalid or unmounted
+                Log.w(TAG, "Could not check OBB partition space, proceeding anyway", e)
+            }
+        }
+
         packageFolder?.walkTopDown()?.forEach { source ->
             if (source.isFile && !source.name.endsWith(".apk", true)) {
                 val relPath = source.relativeTo(packageFolder).path

@@ -1386,6 +1386,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _events.emit(MainEvent.InstallApk(stagedApk))
             updateTaskStatus(task.releaseName, InstallTaskStatus.COMPLETED)
             delay(2000)
+            // Clean up temp install files to prevent zombie recovery leak
+            // These files were created during download/extraction but are no longer needed
+            withContext(Dispatchers.IO) {
+                repository.cleanupInstall(task.releaseName)
+            }
             repository.removeFromQueue(task.releaseName)
             progressThrottleMap.remove(task.releaseName)
             totalBytesWrittenSet.remove(task.releaseName)
@@ -1422,11 +1427,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Adaptive timeout calculation:
         // - Base: 5 minutes minimum (for small games and overhead)
         // - Scale: 1 minute per 500 MB (accounts for download + extraction)
-        // - Cap: 2 hours maximum (for very large games)
+        // - Cap: 6 hours maximum (for very large games like 100GB+)
+        // Note: Previous 2-hour cap was insufficient for games >60GB
         val fileSizeMb = task.totalBytes / (1024 * 1024)
         val baseTimeoutMinutes = 5L
         val scaledMinutes = fileSizeMb / 500 // 1 minute per 500 MB
-        val timeoutMinutes = (baseTimeoutMinutes + scaledMinutes).coerceIn(5, 120)
+        val timeoutMinutes = (baseTimeoutMinutes + scaledMinutes).coerceIn(5, 360)
         val timeoutMs = timeoutMinutes * 60 * 1000L
 
         Log.d(TAG, "Task timeout for ${task.releaseName}: ${timeoutMinutes}min (size: ${fileSizeMb}MB)")
