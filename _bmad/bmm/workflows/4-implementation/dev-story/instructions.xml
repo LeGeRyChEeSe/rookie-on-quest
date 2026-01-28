@@ -12,17 +12,70 @@
   <critical>Do NOT schedule a "next session" or request review pauses unless a HALT condition applies. Only Step 6 decides completion.</critical>
   <critical>User skill level ({user_skill_level}) affects conversation style ONLY, not code updates.</critical>
 
-  <step n="0" goal="Detect worktree environment and auto-configure story" tag="worktree">
-    <!-- UNIVERSAL WORKTREE DETECTION - Works with ANY agent -->
-    <action>invoke-protocol name="detect_worktree"</action>
+  <step n="0" goal="Require being in correct story worktree - block if not" tag="worktree">
+    <!-- CRITICAL: BMad Method REQUIRES coding in isolated worktree -->
 
-    <!-- If .story-id was found, skip to story loading -->
-    <check if="{worktree_story_id} is NOT empty">
-      <goto anchor="task_check" />
+    <action>Check if .story-id file exists in current working directory</action>
+
+    <check if=".story-id file does NOT exist">
+      <critical>🚫 CRITICAL SAFETY VIOLATION - NOT IN A WORKTREE</critical>
+      <output>
+        ❌ **CODING BLOCKED - NOT IN A WORKTREE**
+
+        You are attempting to develop a story WITHOUT an isolated git worktree.
+
+        **BMad Method Requirement:**
+        - ALL story development MUST happen in dedicated worktrees
+        - This prevents branch conflicts and protects main branch from direct changes
+
+        **To Fix:**
+        1. Run the **create-story** workflow first:
+           /bmad:bmm:workflows:create-story {{story_key}}
+
+        2. The workflow will automatically create the worktree for this story
+
+        3. Then run **dev-story** from within that worktree:
+           cd worktrees/story-{{story_key}}
+           /bmad:bmm:workflows:dev-story
+      </output>
+      <action>HALT - Cannot continue without worktree</action>
     </check>
 
-    <!-- No .story-id found, continue with normal story discovery -->
-    <output>ℹ️ No worktree detected - using standard story discovery from sprint-status</output>
+    <!-- .story-id exists - read and validate it -->
+    <action>Read .story-id file content (strip whitespace, trim newlines)</action>
+    <action>Store in variable: {current_worktree_story}</action>
+
+    <output>🌲 Worktree detected - Story: {current_worktree_story}</output>
+
+    <!-- Verify worktree matches target story (if story specified) -->
+    <check if="{{story_path}} is provided OR {{story_key}} is provided">
+      <action>Determine target story key from {{story_path}} or {{story_key}}</action>
+
+      <check if="{current_worktree_story} != {target_story_key}">
+        <critical>🚫 WRONG WORKTREE DETECTED</critical>
+        <output>
+          ❌ **WRONG WORKTREE - CODING BLOCKED**
+
+          Current worktree story: {current_worktree_story}
+          Target story: {target_story_key}
+
+          **You are in the wrong worktree!**
+
+          **To Fix:**
+          - Switch to the correct worktree:
+            cd worktrees/story-{target_story_key}
+
+          - Or if that worktree doesn't exist, create it:
+            /bmad:bmm:workflows:create-story {target_story_key}
+        </output>
+        <action>HALT - Wrong worktree</action>
+      </check>
+
+      <output>✅ Correct worktree confirmed for story: {target_story_key}</output>
+    </check>
+
+    <!-- If .story-id was found and validated, skip to story loading -->
+    <goto anchor="task_check" />
   </step>
 
   <step n="1" goal="Find next ready story and load it" tag="sprint-status">

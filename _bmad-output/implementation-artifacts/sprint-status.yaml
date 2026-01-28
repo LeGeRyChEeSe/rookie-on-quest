@@ -1,5 +1,5 @@
 # generated: 2026-01-09
-# updated: 2026-01-27 (Story 1.8 created)
+# updated: 2026-01-28 (Epic 8 added - Build Automation & Release Management)
 # project: rookie-on-quest
 # tracking_system: file-system
 # story_location: e:\Unity\rookie-on-quest\_bmad-output\implementation-artifacts
@@ -95,3 +95,13 @@ development_status:
   7-5-app-version-display-and-github-update-check: backlog
   7-6-diagnostic-log-export-and-manual-catalog-sync: backlog
   epic-7-retrospective: optional
+
+  epic-8: backlog
+  8-1-github-actions-workflow-foundation: backlog
+  8-2-secure-apk-signing-with-keystore-management: backlog
+  8-3-version-and-changelog-extraction: backlog
+  8-4-release-creation-and-formatting: backlog
+  8-5-release-candidate-build-support: backlog
+  8-6-pr-validation-build-pipeline: backlog
+  8-7-build-dependency-caching-and-performance: backlog
+  epic-8-retrospective: optional

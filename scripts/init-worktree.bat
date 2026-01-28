@@ -17,10 +17,12 @@ if "%STORY_ID%"=="" (
     exit /b 1
 )
 
-REM Get project root (assumes script is in project-root\scripts\)
-set "PROJECT_ROOT=%~dp0.."
-set "WORKTREE_DIR=%PROJECT_ROOT%\worktrees\%AGENT_NAME%-story-%STORY_ID%"
-set "BRANCH_NAME=%AGENT_NAME%-story-%STORY_ID%"
+REM Get project root using git (robust method)
+for /f "delims=" %%i in ('git rev-parse --show-toplevel') do set "PROJECT_ROOT=%%i"
+REM Normalize path (replace / with \)
+set "PROJECT_ROOT=%PROJECT_ROOT:/=\%"
+set "WORKTREE_DIR=%PROJECT_ROOT%\worktrees\%AGENT_NAME%-%STORY_ID%"
+set "BRANCH_NAME=%AGENT_NAME%-%STORY_ID%"
 
 echo === Git Worktree Initialization for Story %STORY_ID% ===
 echo Project Root: %PROJECT_ROOT%
@@ -32,7 +34,7 @@ REM Step 1: Check if worktree already exists
 if exist "%WORKTREE_DIR%" (
     echo [WARNING] Worktree already exists at %WORKTREE_DIR%
     echo Options:
-    echo   1. Use existing worktree (cd %WORKTREE_DIR%)
+    echo   1. Use existing worktree - cd %WORKTREE_DIR%
     echo   2. Remove and recreate
     echo.
     set /p USE_EXISTING="Use existing worktree? (y/n): "
@@ -84,13 +86,17 @@ echo modifiedDuringStory: []
 ) > "%WORKTREE_DIR%\.story-files"
 echo [OK] .story-files manifest created
 
+REM Step 4.5: Copy essential gitignored folders from .worktreeinclude
+echo [INFO] Copying files from .worktreeinclude...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0copy-worktree-files.ps1" -ProjectRoot "%PROJECT_ROOT%" -WorktreeDir "%WORKTREE_DIR%"
+
 REM Step 5: Verify setup
 echo.
 echo === Setup Complete ===
 echo.
-echo 📍 Worktree Location: %WORKTREE_DIR%
-echo 🌿 Branch Name: %BRANCH_NAME%
-echo 🆔 Story ID: %STORY_ID%
+echo Worktree Location: %WORKTREE_DIR%
+echo Branch Name: %BRANCH_NAME%
+echo Story ID: %STORY_ID%
 echo.
 echo Next Steps for ANY Agent:
 echo   1. Navigate to worktree: cd /d "%WORKTREE_DIR%"

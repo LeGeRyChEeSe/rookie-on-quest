@@ -2,6 +2,23 @@ name: create-story
 description: "Create the next user story from epics+stories with enhanced context analysis and direct ready-for-dev marking"
 author: "BMad"
 
+# CRITICAL PRE-CHECK - Must execute BEFORE any workflow logic
+preconditions:
+  - name: "worktree-check"
+    description: "Ensure isolated git worktree exists for this story"
+    critical: true
+    check: |
+      1. Check if .story-id file exists in current directory
+      2. If exists, read and store the story ID
+      3. If not exists:
+         a. Determine target story from sprint-status or user input
+         b. Check if worktree exists: git worktree list
+         c. If worktree doesn't exist, create it: scripts/init-worktree.bat {story_key} story
+         d. Inform user to switch to worktree directory and HALT
+    failure_action: "HALT and inform user to switch to worktree"
+    windows_script: "scripts\\init-worktree.bat {story_key} story"
+    unix_script: "./scripts/init-worktree.sh {story_key} story"
+
 # Critical variables from config
 config_source: "{project-root}/_bmad/bmm/config.yaml"
 user_name: "{config_source}:user_name"

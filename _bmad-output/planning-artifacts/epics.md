@@ -5,7 +5,7 @@ inputDocuments:
   - 'docs/architecture-app.md'
 lastStep: 4
 workflowStatus: 'complete'
-completedDate: '2026-01-09'
+completedDate: '2026-01-28'
 ---
 
 # rookie-on-quest - Epic Breakdown
@@ -96,6 +96,22 @@ This document provides the complete epic and story breakdown for rookie-on-quest
 - **FR59:** Users can export diagnostic logs for troubleshooting
 - **FR60:** System can check GitHub for app updates on startup
 
+### Build Automation & Release Management
+
+- **FR61:** System can build release APK via automated CI/CD workflow on manual trigger
+- **FR62:** System can sign APK with proper keystore configuration stored in secure credential manager
+- **FR63:** System can extract version from build configuration file automatically
+- **FR64:** System can extract changelog entries from changelog file for current version
+- **FR65:** System can format release title as "Rookie On Quest vX.Y.Z"
+- **FR66:** System can format APK filename as "RookieOnQuest-vX.Y.Z.apk"
+- **FR67:** System can create release with proper version tag (vX.Y.Z)
+- **FR68:** System can attach formatted APK to release
+- **FR69:** System can populate release body with formatted changelog (✨🚀🔧 sections)
+- **FR70:** System can support release candidate builds (RC suffix: vX.Y.Z-rc.1)
+- **FR71:** System can run build validation on code change reviews (debug build + lint checks)
+- **FR72:** System can cache build dependencies for faster builds
+- **FR73:** System can run automated tests before creating release (if tests exist)
+
 ### Non-Functional Requirements
 
 **Performance - VR Frame Rate (Critical):**
@@ -173,6 +189,30 @@ This document provides the complete epic and story breakdown for rookie-on-quest
 - **NFR-M8:** APK size must not exceed 50MB (sideloading constraint)
 - **NFR-M9:** App updates must not break existing downloads in progress
 
+### Build & Release Infrastructure
+
+**Build Performance:**
+- **NFR-B1:** CI/CD automated build workflow must complete release build within 10 minutes
+- **NFR-B2:** Build dependency caching must reduce build time by minimum 50% vs cold build
+- **NFR-B3:** Workflow must support parallel execution of code quality and test validation tasks
+
+**Release Reliability:**
+- **NFR-B4:** Zero manual steps required between workflow trigger and release creation
+- **NFR-B5:** Release APK must be byte-identical (SHA-256 hash match) to local Gradle release build output with same keystore and version, verified by `apksigner verify --print-certs` passing all checks and automated hash comparison in CI workflow
+- **NFR-B6:** Changelog extraction must preserve formatting (✨🚀🔧 emojis, bullet points)
+- **NFR-B7:** Release creation must fail within 30 seconds of version/tag mismatch detection, display error with specific mismatch reason (tag "v2.5.0" vs build "2.4.0") in CI workflow logs, and create zero artifacts on failure
+
+**Security & Credentials:**
+- **NFR-B8:** Keystore signing credentials must be stored in secure credential manager (never in repository)
+- **NFR-B9:** Workflow must have explicit permissions for release creation
+- **NFR-B10:** Workflow must validate tag format matches version in build configuration file
+
+**Developer Experience:**
+- **NFR-B11:** Workflow must be manually triggerable via web interface "Run workflow" button
+- **NFR-B12:** Workflow must accept version input parameter for custom builds (RCs, hotfixes)
+- **NFR-B13:** Release workflow must create version tag if it doesn't exist (with confirmation)
+- **NFR-B14:** PR validation builds must display build status with 3 levels of feedback: pass/fail icon, error count by category (lint, test, compilation), and direct link to failing test output, all visible in PR conversation view within 2 minutes of build completion
+
 ### Additional Requirements
 
 **Architecture & Technical:**
@@ -198,6 +238,13 @@ This document provides the complete epic and story breakdown for rookie-on-quest
 - Automatic migration from v2.4.0 StateFlow queue to v2.5.0 Room-backed queue
 - Lossless migration of any active downloads at time of update
 - Backward compatibility: v2.5.0 must handle v2.4.0 data structures gracefully
+
+**Build & Release Infrastructure:**
+- Build System: Gradle (Kotlin DSL) with build variants Debug (unobfuscated) and Release (R8 obfuscation, signed)
+- CI/CD Platform: GitHub Actions for automated builds and releases
+- Distribution: GitHub Releases (APK downloads)
+- Minimum SDK: Android 10+ (API 29) maintained across all releases
+- Secure credential management: Keystore stored in GitHub Secrets (never in repository)
 
 ### FR Coverage Map
 
@@ -274,6 +321,21 @@ This document provides the complete epic and story breakdown for rookie-on-quest
 - FR58: Users can manually trigger catalog synchronization
 - FR59: Users can export diagnostic logs for troubleshooting
 - FR60: System can check GitHub for app updates on startup
+
+**Epic 8: Build Automation & Release Management**
+- FR61: System can build release APK via automated CI/CD workflow on manual trigger
+- FR62: System can sign APK with proper keystore configuration stored in secure credential manager
+- FR63: System can extract version from build configuration file automatically
+- FR64: System can extract changelog entries from changelog file for current version
+- FR65: System can format release title as "Rookie On Quest vX.Y.Z"
+- FR66: System can format APK filename as "RookieOnQuest-vX.Y.Z.apk"
+- FR67: System can create release with proper version tag (vX.Y.Z)
+- FR68: System can attach formatted APK to release
+- FR69: System can populate release body with formatted changelog (✨🚀🔧 sections)
+- FR70: System can support release candidate builds (RC suffix: vX.Y.Z-rc.1)
+- FR71: System can run build validation on code change reviews (debug build + lint checks)
+- FR72: System can cache build dependencies for faster builds
+- FR73: System can run automated tests before creating release (if tests exist)
 
 ## Epic List
 
@@ -362,6 +424,20 @@ Users can efficiently find, filter, search, and favorite games with enhanced dia
 - App version display and GitHub update checks
 - Manual catalog sync trigger
 - Diagnostic log export functionality
+
+### Epic 8: Build Automation & Release Management
+Developers can create reliable, automated release builds with proper signing, changelog extraction, and GitHub releases through a streamlined CI/CD workflow.
+
+**FRs covered:** FR61-FR73 (13 FRs)
+
+**Key Deliverables:**
+- GitHub Actions workflow for automated release builds
+- Secure keystore management via GitHub Secrets
+- Automatic version and changelog extraction from build config
+- Proper APK signing and release creation
+- PR validation builds with status feedback
+- Build dependency caching for faster builds
+- Support for release candidates (RC builds)
 
 ## Epic 1: Persistent Installation Queue System
 
@@ -1043,3 +1119,146 @@ So that I can troubleshoot problems and share logs with support.
 **And** includes file path in toast for user reference
 **And** logs limited to last 7 days to prevent excessive file size
 **And** log export works offline (exports cached logs)
+
+## Epic 8: Build Automation & Release Management
+
+Developers can create reliable, automated release builds with proper signing, changelog extraction, and GitHub releases through a streamlined CI/CD workflow.
+
+### Story 8.1: GitHub Actions Workflow Foundation
+
+As a developer,
+I want to create a GitHub Actions workflow for automated release builds,
+So that I can trigger release builds manually from the GitHub interface without running builds locally.
+
+**Acceptance Criteria:**
+
+**Given** the project is hosted on GitHub
+**When** I create the GitHub Actions workflow file at `.github/workflows/release.yml`
+**Then** workflow is manually triggerable via "Run workflow" button in GitHub Actions tab (FR61, NFR-B11)
+**And** workflow accepts `version` input parameter for custom builds (NFR-B12)
+**And** workflow has explicit permissions for contents write and releases creation (NFR-B9)
+**And** workflow runs on Ubuntu latest runner
+**And** workflow checks out code with `actions/checkout@v4`
+**And** workflow sets up JDK with proper version for Android development
+**And** workflow grants execute permission for gradlew
+**And** workflow completes release build within 10 minutes (NFR-B1)
+**And** workflow logs are visible in GitHub Actions interface
+
+### Story 8.2: Secure APK Signing with Keystore Management
+
+As a developer,
+I want to configure automated APK signing using secure credentials,
+So that release builds are signed properly without exposing keystore secrets in the repository.
+
+**Acceptance Criteria:**
+
+**Given** the GitHub Actions workflow is running
+**When** the release build step executes
+**Then** workflow retrieves keystore credentials from GitHub Secrets (NFR-B8)
+**And** required secrets include: `KEYSTORE_FILE` (base64 encoded), `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`
+**And** secrets are never logged or exposed in workflow output
+**And** workflow creates `keystore.properties` file from secrets during build
+**And** `keystore.properties` is used by `build.gradle.kts` for signing configuration
+**And** temporary `keystore.properties` is deleted after build completes
+**And** build fails with clear error message if any required secret is missing
+**And** signing configuration produces properly signed APK verifiable by `apksigner verify --print-certs` (NFR-B5)
+
+### Story 8.3: Version and Changelog Extraction
+
+As a developer,
+I want to automatically extract version and changelog from project files,
+So that releases are populated with correct version info and formatted release notes without manual editing.
+
+**Acceptance Criteria:**
+
+**Given** the workflow is building a release for version X.Y.Z
+**When** the extraction step executes
+**Then** workflow extracts version name from `build.gradle.kts` `versionName` field (FR63)
+**And** workflow extracts version code from `build.gradle.kts` `versionCode` field
+**And** workflow validates tag format matches version in build config (NFR-B10)
+**And** workflow fails within 30 seconds if version/tag mismatch detected with specific error message (NFR-B7)
+**And** workflow reads `CHANGELOG.md` file from repository root (FR64)
+**And** workflow extracts changelog section for current version X.Y.Z
+**And** workflow preserves changelog formatting including ✨🚀🔧 emojis and bullet points (NFR-B6, FR69)
+**And** workflow validates that changelog entry exists for current version
+**And** workflow fails with clear error if changelog entry is missing
+
+### Story 8.4: Release Creation and Formatting
+
+As a developer,
+I want to automatically create GitHub releases with proper formatting and APK attachment,
+So that users can download signed APKs with complete release information.
+
+**Acceptance Criteria:**
+
+**Given** the build has completed successfully and produced signed APK
+**When** the release creation step executes
+**Then** workflow generates APK filename as `RookieOnQuest-vX.Y.Z.apk` (FR66)
+**And** workflow creates GitHub release with title "Rookie On Quest vX.Y.Z" (FR65)
+**And** workflow creates or validates version tag `vX.Y.Z` exists (FR67)
+**And** workflow attaches signed APK to release (FR68)
+**And** workflow populates release body with extracted changelog (FR69)
+**And** release body includes sections: ✨ Added, 🚀 Changed, 🔧 Fixed, 📝 Other
+**And** workflow verifies APK is byte-identical to local Gradle release build (NFR-B5)
+**And** zero manual steps required between workflow trigger and release creation (NFR-B4)
+**And** failed releases create zero artifacts (NFR-B7)
+
+### Story 8.5: Release Candidate Build Support
+
+As a developer,
+I want to build and release release candidate versions,
+So that I can distribute pre-release versions for testing before final release.
+
+**Acceptance Criteria:**
+
+**Given** I need to create a release candidate build
+**When** I trigger workflow with version parameter `2.5.0-rc.1`
+**Then** workflow accepts RC suffix format (FR70)
+**And** workflow creates release tag `v2.5.0-rc.1`
+**And** workflow generates APK filename as `RookieOnQuest-v2.5.0-rc.1.apk`
+**And** workflow creates release title "Rookie On Quest v2.5.0-rc.1 (Release Candidate)"
+**And** release body includes "Pre-release" badge/indicator
+**And** workflow extracts changelog for RC version from `CHANGELOG.md`
+**And** workflow validates version code is higher than previous release
+**And** workflow supports custom version input for hotfixes and RCs (NFR-B12)
+
+### Story 8.6: PR Validation Build Pipeline
+
+As a developer,
+I want to automatically validate pull requests with debug builds and quality checks,
+So that I catch issues early before merging to main branch.
+
+**Acceptance Criteria:**
+
+**Given** a pull request is opened or updated
+**When** the PR validation workflow triggers
+**Then** workflow runs debug build (not release) to verify compilation (FR71)
+**And** workflow runs Android lint checks and reports issues
+**And** workflow runs automated unit tests if test suite exists (FR73)
+**And** workflow runs automated instrumented tests if they exist
+**And** workflow displays build status with 3 feedback levels in PR conversation (NFR-B14):
+  - Pass/fail icon (✅/❌)
+  - Error count by category (lint, test, compilation)
+  - Direct link to failing test output
+**And** status feedback appears within 2 minutes of build completion (NFR-B14)
+**And** workflow runs on code push to PR branch
+**And** workflow uses build dependency caching for faster validation (NFR-B3, FR72)
+
+### Story 8.7: Build Dependency Caching and Performance
+
+As a developer,
+I want to cache Gradle dependencies for faster builds,
+So that CI/CD builds complete quickly and save GitHub Actions minutes.
+
+**Acceptance Criteria:**
+
+**Given** the GitHub Actions workflow is running
+**When** the build step executes
+**Then** workflow caches Gradle dependencies using `actions/cache@v4` (FR72)
+**And** cache key includes `gradle-wrapper.properties` hash for cache invalidation
+**And** cache key includes operating system for multi-OS compatibility
+**And** workflow caches Gradle wrapper, caches, and build cache directories
+**And** cached dependencies reduce build time by minimum 50% vs cold build (NFR-B2)
+**And** workflow supports parallel execution of code quality and test validation tasks (NFR-B3)
+**And** workflow completes full release build within 10 minutes (NFR-B1)
+**And** cache restoration and save steps are visible in workflow logs

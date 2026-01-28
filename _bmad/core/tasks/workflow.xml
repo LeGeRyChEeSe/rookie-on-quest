@@ -360,6 +360,182 @@
         </actions>
       </completion>
     </protocol>
+
+    <protocol name="ensure_story_worktree" desc="Ensure story has an isolated git worktree - create if missing">
+      <objective>
+        For create-story workflow: Check if story already has a dedicated worktree in .git/worktrees/.
+        If NOT found, automatically create the worktree for isolated development.
+      </objective>
+
+      <critical>This protocol enforces BMad Method worktree isolation policy - EVERY story must have its own worktree</critical>
+
+      <flow>
+        <step n="1" title="Check for Existing Worktree">
+          <action>Check if .story-id file exists in current working directory</action>
+
+          <check if=".story-id file exists">
+            <action>Read .story-id file content (strip whitespace, trim newlines)</action>
+            <action>Store story ID in variable: {worktree_story_id}</action>
+            <output>🌲 Already in worktree for story: {worktree_story_id}</output>
+            <action>Skip to step 4 (worktree already exists)</action>
+          </check>
+
+          <check if=".story-id file does NOT exist">
+            <output>ℹ️ Not in a worktree - will check if one exists for target story</output>
+            <action>Set {worktree_story_id} = empty</action>
+            <action>Continue to step 2</action>
+          </check>
+        </step>
+
+        <step n="2" title="Determine Target Story Key">
+          <action>Get target story key from workflow variables: {{story_key}}</action>
+
+          <check if="{{story_key}} is empty">
+            <action>Get target story from user input or sprint-status auto-discovery</action>
+            <action>Parse story key from input (format: X-Y-name or epic-X-story-Y)</action>
+          </check>
+
+          <output>🎯 Target story: {{story_key}}</output>
+        </step>
+
+        <step n="3" title="Check if Worktree Already Exists">
+          <action>List all worktrees: git worktree list --porcelain</action>
+          <action>Parse output to find worktree paths</action>
+          <action>Check if any worktree contains a .story-id file matching {{story_key}}</action>
+
+          <check if="matching worktree found">
+            <output>✅ Worktree already exists for story {{story_key}}</output>
+            <output>Path: {existing_worktree_path}</output>
+            <action>Set {worktree_exists} = true</action>
+            <action>Skip to step 5</action>
+          </check>
+
+          <check if="no matching worktree found">
+            <output>⚠️ No worktree found for story {{story_key}}</output>
+            <action>Set {worktree_exists} = false</action>
+            <action>Continue to step 4</action>
+          </check>
+        </step>
+
+        <step n="4" title="Create Worktree if Missing">
+          <check if="{worktree_exists} = false">
+            <critical>🔧 CREATING GIT WORKTREE FOR ISOLATED DEVELOPMENT</critical>
+
+            <action>Determine worktree path: {project-root}/worktrees/story-{{story_key}}</action>
+            <action>Determine branch name: story/{{story_key}}</action>
+
+            <output>📂 Creating worktree at: {worktree_path}</output>
+            <action>Create worktree branch: git worktree add -b {branch_name} {worktree_path} main</action>
+
+            <check if="worktree creation failed">
+              <output>❌ Failed to create worktree</output>
+              <output>Please check git status and try manually</output>
+              <action>HALT - Cannot proceed without worktree</action>
+            </check>
+
+            <action>Create .story-id file in worktree root: echo "{{story_key}}" > {worktree_path}/.story-id</action>
+            <action>Create .story-files manifest (empty for now): touch {worktree_path}/.story-files</action>
+
+            <output>✅ Worktree created successfully!</output>
+            <output>Branch: {branch_name}</output>
+            <output>Path: {worktree_path}</output>
+            <output>Switch to worktree: cd {worktree_path}</output>
+          </check>
+        </step>
+
+        <step n="5" title="Configure Workflow for Worktree">
+          <action>Set workflow variable: {use_worktree} = true</action>
+          <action>Set workflow variable: {story_worktree_path} = path to story worktree</action>
+
+          <output>🎯 Worktree protocol complete</output>
+          <output>Story: {{story_key}}</output>
+          <output>Path: {story_worktree_path}</output>
+          <check if="worktree was just created">
+            <output>⚠️ IMPORTANT: Switch to worktree directory before continuing!</output>
+            <output>cd {story_worktree_path}</output>
+          </check>
+        </step>
+      </flow>
+    </protocol>
+
+    <protocol name="require_story_worktree" desc="Require being in correct story worktree - block if not">
+      <objective>
+        For dev-story workflow: Verify we are running in the correct git worktree for the target story.
+        BLOCK execution if not in a worktree or in the wrong worktree.
+      </objective>
+
+      <critical>This protocol PREVENTS coding outside of isolated worktree - protects main branch from direct changes</critical>
+
+      <flow>
+        <step n="1" title="Check for Worktree Environment">
+          <action>Check if .story-id file exists in current working directory</action>
+
+          <check if=".story-id file does NOT exist">
+            <critical>🚫 CRITICAL SAFETY VIOLATION</critical>
+            <output>
+              ❌ **NOT IN A WORKTREE - CODING BLOCKED**
+
+              You are attempting to develop a story WITHOUT an isolated git worktree.
+
+              **BMad Method Requirement:**
+              - ALL story development MUST happen in dedicated worktrees
+              - This prevents branch conflicts and protects main branch
+
+              **To Fix:**
+              1. Run the **create-story** workflow first
+              2. It will automatically create the worktree for this story
+              3. Then run **dev-story** from within that worktree
+
+              **Command:**
+              /bmad:bmm:workflows:create-story {{story_key}}
+
+              After create-story completes:
+              cd worktrees/story-{{story_key}}
+              /bmad:bmm:workflows:dev-story
+            </output>
+            <action>HALT - Cannot continue without worktree</action>
+          </check>
+
+          <action>Read .story-id file content (strip whitespace, trim newlines)</action>
+          <action>Store in variable: {current_worktree_story}</action>
+        </step>
+
+        <step n="2" title="Verify Worktree Matches Target Story">
+          <action>Get target story key from workflow: {{story_key}}</action>
+
+          <check if="{{story_key}} is empty">
+            <action>Parse story key from .story-id: {current_worktree_story}</action>
+            <action>Set {{story_key}} = {current_worktree_story}</action>
+          </check>
+
+          <check if="{current_worktree_story} != {{story_key}}">
+            <critical>🚫 WRONG WORKTREE - CODING BLOCKED</critical>
+            <output>
+              ❌ **WRONG WORKTREE DETECTED**
+
+              Current worktree story: {current_worktree_story}
+              Target story: {{story_key}}
+
+              **You are in the wrong worktree!**
+
+              **To Fix:**
+              - Switch to the correct worktree:
+                cd worktrees/story-{{story_key}}
+
+              - Or if that worktree doesn't exist, create it first:
+                /bmad:bmm:workflows:create-story {{story_key}}
+            </output>
+            <action>HALT - Wrong worktree</action>
+          </check>
+
+          <output>✅ Correct worktree confirmed for story: {{story_key}}</output>
+        </step>
+
+        <step n="3" title="Load Worktree Context">
+          <invoke-protocol name="detect_worktree"/>
+        </step>
+      </flow>
+    </protocol>
   </protocols>
 
   <llm final="true">

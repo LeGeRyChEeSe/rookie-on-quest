@@ -1,0 +1,24 @@
+# Worktree Include File
+# Folders and files to copy into new worktrees (despite being in .gitignore)
+# This ensures agent-specific folders are available in isolated worktrees
+
+# AI Agent folders (for slash commands and context)
+.claude/
+.gemini/
+.cursor/
+.qwen/
+.continue/
+.kilocodemodes
+.opencode/
+.roo/
+
+# Project-specific configuration (if needed)
+# CLAUDE.md
+# _bmad/
+
+# Add any other files/folders that should be copied to each worktree
+# Example:
+# .env.example
+# config.local.json
+
+keystore.properties

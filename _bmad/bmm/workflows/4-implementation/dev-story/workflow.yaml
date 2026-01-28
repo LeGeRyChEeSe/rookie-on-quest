@@ -2,6 +2,29 @@ name: dev-story
 description: "Execute a story by implementing tasks/subtasks, writing tests, validating, and updating the story file per acceptance criteria"
 author: "BMad"
 
+# CRITICAL PRE-CHECK - Must execute BEFORE any workflow logic
+preconditions:
+  - name: "worktree-require"
+    description: "Require being in correct story worktree - block if not"
+    critical: true
+    check: |
+      1. Check if .story-id file exists in current working directory
+      2. If NOT exists:
+         - BLOCK with error message explaining BMad Method requirement
+         - Instruct user to run create-story workflow first
+      3. If exists, read .story-id content
+      4. Verify worktree story matches target story
+      5. If mismatch, BLOCK with error and instructions to fix
+    failure_action: "HALT - Cannot continue without correct worktree"
+    error_message: |
+      ❌ NOT IN A WORKTREE - CODING BLOCKED
+
+      BMad Method Requirement: ALL story development MUST happen in dedicated worktrees.
+
+      To Fix:
+      1. Run create-story workflow first: /bmad:bmm:workflows:create-story {story_key}
+      2. Then run dev-story from within that worktree: cd worktrees/story-{story_key}
+
 # Critical variables from config
 config_source: "{project-root}/_bmad/bmm/config.yaml"
 output_folder: "{config_source}:output_folder"
