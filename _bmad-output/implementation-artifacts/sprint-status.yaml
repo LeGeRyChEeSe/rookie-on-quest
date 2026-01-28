@@ -97,7 +97,7 @@ development_status:
   epic-7-retrospective: optional
 
   epic-8: in-progress
-  8-1: "review"
+  8-1: review
   8-2-secure-apk-signing-with-keystore-management: backlog
   8-3-version-and-changelog-extraction: backlog
   8-4-release-creation-and-formatting: backlog

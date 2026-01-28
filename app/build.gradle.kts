@@ -15,13 +15,17 @@ android {
         applicationId = "com.vrpirates.rookieonquest"
         minSdk = 29
         targetSdk = 34
-        // versionCode can be overridden by Gradle property (e.g., -PversionCode="10")
-        // This is used by GitHub Actions workflow (Story 8.1) for custom version builds
-        // Default fallback "9" will be eliminated in Story 8.3 when version is centralized via Git tags
+
+        // Version configuration with GitHub Actions parameter override support
+        // ========================================================================
+        // versionCode can be overridden by Gradle property: -PversionCode="10"
+        // versionName can be overridden by Gradle property: -PversionName="2.5.0"
+        //
+        // Story 8.1: These fallback values enable CI/CD workflow foundation testing
+        // Story 8.3: Version will be centralized via Git tags, eliminating fallbacks
+        //
+        // Current fallbacks (from build.gradle.kts):
         versionCode = project.findProperty("versionCode")?.toString()?.toIntOrNull() ?: 9
-        // versionName can be overridden by Gradle property (e.g., -PversionName="2.5.0")
-        // Default hardcoded version "2.5.0" ensures builds work without parameters.
-        // In Story 8.3, version will be centralized via Git tags, eliminating this redundancy.
         versionName = project.findProperty("versionName")?.toString() ?: "2.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -42,11 +46,16 @@ android {
                 keyAlias = properties.getProperty("keyAlias")
                 keyPassword = properties.getProperty("keyPassword")
             } else {
-                // CRITICAL WARNING: No keystore.properties found - release APK will be signed with debug key!
-                // This fallback is ONLY acceptable for Story 8.1 (CI/CD foundation testing).
-                // Story 8.2 will add proper signing config with GitHub Secrets integration.
-                // Production builds MUST have keystore.properties configured.
-                logger.warn("keystore.properties not found - release APK will be signed with debug key (NOT production-ready)")
+                // CRITICAL SECURITY WARNING: No keystore.properties found - release APK will be signed with debug key!
+                //
+                // This fallback is ONLY acceptable for Story 8.1 (CI/CD foundation testing workflow).
+                // Story 8.2 "Secure APK Signing with Keystore Management" will add proper signing config
+                // with GitHub Secrets integration to eliminate this security risk.
+                //
+                // PRODUCTION BUILDS MUST HAVE keystore.properties CONFIGURED!
+                // Debug-signed release APKs are NOT suitable for production distribution.
+                logger.error("CRITICAL: keystore.properties not found - release APK will be signed with DEBUG key (NOT production-ready)")
+                logger.error("Story 8.2 will add GitHub Secrets-based signing to eliminate this risk")
             }
         }
     }
@@ -60,11 +69,15 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Only sign with release config if keystore.properties exists
-            // Otherwise, fall back to debug key (Story 8.1 - signing in Story 8.2)
+            // SECURITY NOTICE: Signing config selection
+            // - If keystore.properties exists: uses production release signing config
+            // - If keystore.properties missing: falls back to debug signing config (NOT production-ready)
+            // This fallback is ONLY for Story 8.1 CI/CD workflow testing.
+            // Story 8.2 will add GitHub Secrets-based signing to eliminate this fallback entirely.
             signingConfig = if (rootProject.file("keystore.properties").exists()) {
                 signingConfigs.getByName("release")
             } else {
+                logger.warn("Falling back to debug signing config for release build (NOT production-ready)")
                 signingConfigs.getByName("debug")
             }
         }
@@ -95,9 +108,19 @@ android {
 }
 
 // APK output filename configuration
-// TECHNICAL DEBT: Using internal AGP API (BaseVariantOutputImpl) - will be refactored in Story 8.7
-// The public Variant API does not yet support outputFileName configuration.
-// See: https://issuetracker.google.com/issues/159636627
+// ================================================================================
+// TECHNICAL DEBT: Using internal AGP API (BaseVariantOutputImpl)
+// ================================================================================
+// This workaround is necessary because the public Variant API does not yet
+// support outputFileName configuration. This will be refactored in Story 8.7
+// "Build Dependency Caching and Performance" when we can revisit the build setup.
+//
+// References:
+// - Issue tracker: https://issuetracker.google.com/issues/159636627
+// - Public API discussion: https://github.com/android/gradle-issues/issues/3714
+//
+// Story 8.1 Note: This technical debt is accepted for workflow foundation.
+// Story 8.7 will address this as part of build optimization work.
 android.applicationVariants.all {
     outputs
         .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
