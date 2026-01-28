@@ -29,6 +29,9 @@ interface GameDao {
     @Query("SELECT * FROM games WHERE releaseName = :releaseName LIMIT 1")
     suspend fun getByReleaseName(releaseName: String): GameEntity?
 
+    @Query("SELECT * FROM games WHERE packageName = :packageName LIMIT 1")
+    suspend fun getByPackageName(packageName: String): GameEntity?
+
     /**
      * Batch query to fetch multiple games by release names in a single DB call.
      * Used to avoid N+1 queries when converting queue entities to UI state.

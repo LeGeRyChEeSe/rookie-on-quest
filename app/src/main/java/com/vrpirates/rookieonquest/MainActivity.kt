@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -113,7 +114,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     var taskToCancel by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(listState, staggeredGridState) {
-        snapshotFlow { 
+        snapshotFlow {
             if (listState.layoutInfo.visibleItemsInfo.isNotEmpty()) listState.layoutInfo.visibleItemsInfo.map { it.index }
             else staggeredGridState.layoutInfo.visibleItemsInfo.map { it.index }
         }
@@ -121,6 +122,9 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             viewModel.setVisibleIndices(indices)
         }
     }
+
+    // Story 1.7: Note - verifyPendingInstallations() is called in ON_RESUME lifecycle event
+    // which covers both app startup and return from installer. No separate LaunchedEffect needed.
 
     LaunchedEffect(Unit) {
         viewModel.events.collectLatest { event ->
@@ -208,6 +212,10 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 Lifecycle.Event.ON_RESUME -> {
                     viewModel.checkPermissions()
                     viewModel.setAppVisibility(true)
+                    // Story 1.7: Verify pending installations when app returns to foreground
+                    // This handles the case where user installed APK in system installer
+                    // and is now returning to the app to complete the flow
+                    viewModel.verifyPendingInstallations()
                 }
                 Lifecycle.Event.ON_PAUSE -> {
                     viewModel.setAppVisibility(false)
@@ -1019,8 +1027,19 @@ fun InstallationOverlay(
             
             Spacer(modifier = Modifier.height(48.dp))
             
+            // Story 1.7 Code Review Fix: User-friendly status messages instead of raw enum names
+            val statusMessage = activeTask.message ?: when (activeTask.status) {
+                InstallTaskStatus.PENDING_INSTALL -> stringResource(R.string.status_pending_install)
+                InstallTaskStatus.QUEUED -> stringResource(R.string.status_queued)
+                InstallTaskStatus.DOWNLOADING -> stringResource(R.string.status_downloading)
+                InstallTaskStatus.EXTRACTING -> stringResource(R.string.status_extracting)
+                InstallTaskStatus.INSTALLING -> stringResource(R.string.status_installing)
+                InstallTaskStatus.PAUSED -> stringResource(R.string.status_paused)
+                InstallTaskStatus.COMPLETED -> stringResource(R.string.status_completed)
+                InstallTaskStatus.FAILED -> stringResource(R.string.status_failed)
+            }
             Text(
-                text = activeTask.message ?: activeTask.status.name,
+                text = statusMessage,
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White,
                 textAlign = TextAlign.Center

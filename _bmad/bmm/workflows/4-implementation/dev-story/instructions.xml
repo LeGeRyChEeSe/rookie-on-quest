@@ -12,6 +12,19 @@
   <critical>Do NOT schedule a "next session" or request review pauses unless a HALT condition applies. Only Step 6 decides completion.</critical>
   <critical>User skill level ({user_skill_level}) affects conversation style ONLY, not code updates.</critical>
 
+  <step n="0" goal="Detect worktree environment and auto-configure story" tag="worktree">
+    <!-- UNIVERSAL WORKTREE DETECTION - Works with ANY agent -->
+    <action>invoke-protocol name="detect_worktree"</action>
+
+    <!-- If .story-id was found, skip to story loading -->
+    <check if="{worktree_story_id} is NOT empty">
+      <goto anchor="task_check" />
+    </check>
+
+    <!-- No .story-id found, continue with normal story discovery -->
+    <output>ℹ️ No worktree detected - using standard story discovery from sprint-status</output>
+  </step>
+
   <step n="1" goal="Find next ready story and load it" tag="sprint-status">
     <check if="{{story_path}} is provided">
       <action>Use {{story_path}} directly</action>

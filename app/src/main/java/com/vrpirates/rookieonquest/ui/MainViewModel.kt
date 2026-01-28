@@ -12,6 +12,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.vrpirates.rookieonquest.BuildConfig
 import com.vrpirates.rookieonquest.data.GameData
+import com.vrpirates.rookieonquest.data.InstallUtils
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 import com.vrpirates.rookieonquest.data.MainRepository
 import com.vrpirates.rookieonquest.network.GitHubRelease
 import com.vrpirates.rookieonquest.network.GitHubService
@@ -78,14 +82,15 @@ enum class InstallStatus {
 }
 
 enum class InstallTaskStatus {
-    QUEUED, DOWNLOADING, EXTRACTING, INSTALLING, PAUSED, COMPLETED, FAILED
+    QUEUED, DOWNLOADING, EXTRACTING, INSTALLING, PENDING_INSTALL, PAUSED, COMPLETED, FAILED
 }
 
 fun InstallTaskStatus.isProcessing(): Boolean =
     this == InstallTaskStatus.QUEUED ||
     this == InstallTaskStatus.DOWNLOADING ||
     this == InstallTaskStatus.EXTRACTING ||
-    this == InstallTaskStatus.INSTALLING
+    this == InstallTaskStatus.INSTALLING ||
+    this == InstallTaskStatus.PENDING_INSTALL
 
 /**
  * Maps a game name's first character to its alphabet group character.
@@ -162,6 +167,7 @@ fun com.vrpirates.rookieonquest.data.InstallStatus.toTaskStatus(): InstallTaskSt
         com.vrpirates.rookieonquest.data.InstallStatus.EXTRACTING -> InstallTaskStatus.EXTRACTING
         com.vrpirates.rookieonquest.data.InstallStatus.COPYING_OBB -> InstallTaskStatus.INSTALLING // OBB copy is sub-phase of install
         com.vrpirates.rookieonquest.data.InstallStatus.INSTALLING -> InstallTaskStatus.INSTALLING
+        com.vrpirates.rookieonquest.data.InstallStatus.PENDING_INSTALL -> InstallTaskStatus.PENDING_INSTALL // Story 1.7: Map pending install state
         com.vrpirates.rookieonquest.data.InstallStatus.PAUSED -> InstallTaskStatus.PAUSED
         com.vrpirates.rookieonquest.data.InstallStatus.COMPLETED -> InstallTaskStatus.COMPLETED
         com.vrpirates.rookieonquest.data.InstallStatus.FAILED -> InstallTaskStatus.FAILED
@@ -184,6 +190,7 @@ fun InstallTaskStatus.toDataStatus(): com.vrpirates.rookieonquest.data.InstallSt
         InstallTaskStatus.DOWNLOADING -> com.vrpirates.rookieonquest.data.InstallStatus.DOWNLOADING
         InstallTaskStatus.EXTRACTING -> com.vrpirates.rookieonquest.data.InstallStatus.EXTRACTING
         InstallTaskStatus.INSTALLING -> com.vrpirates.rookieonquest.data.InstallStatus.INSTALLING
+        InstallTaskStatus.PENDING_INSTALL -> com.vrpirates.rookieonquest.data.InstallStatus.PENDING_INSTALL // Story 1.7: Map to PENDING_INSTALL in data layer
         InstallTaskStatus.PAUSED -> com.vrpirates.rookieonquest.data.InstallStatus.PAUSED
         InstallTaskStatus.COMPLETED -> com.vrpirates.rookieonquest.data.InstallStatus.COMPLETED
         InstallTaskStatus.FAILED -> com.vrpirates.rookieonquest.data.InstallStatus.FAILED
@@ -208,14 +215,15 @@ fun com.vrpirates.rookieonquest.data.QueuedInstallEntity.toInstallTaskState(
         InstallTaskStatus.DOWNLOADING -> "Downloading..."
         InstallTaskStatus.EXTRACTING -> "Extracting..."
         InstallTaskStatus.INSTALLING -> "Installing..."
+        InstallTaskStatus.PENDING_INSTALL -> "Pending Install..."
         InstallTaskStatus.PAUSED -> "Paused"
         InstallTaskStatus.COMPLETED -> "Completed"
         InstallTaskStatus.FAILED -> "Failed"
     }
 
     // Format size strings
-    val currentSize = downloadedBytes?.let { formatBytes(it) }
-    val totalSizeStr = totalBytes?.let { formatBytes(it) }
+    val currentSize = downloadedBytes?.let { InstallUtils.formatBytes(it) }
+    val totalSizeStr = totalBytes?.let { InstallUtils.formatBytes(it) }
 
     return InstallTaskState(
         releaseName = releaseName,
@@ -231,22 +239,6 @@ fun com.vrpirates.rookieonquest.data.QueuedInstallEntity.toInstallTaskState(
         downloadedBytes = downloadedBytes,
         error = null // Error state is transient, not persisted
     )
-}
-
-/**
- * Format bytes to human-readable string
- */
-private fun formatBytes(bytes: Long): String {
-    val kb = 1024L
-    val mb = kb * 1024
-    val gb = mb * 1024
-
-    return when {
-        bytes >= gb -> "%.2f GB".format(bytes / gb.toDouble())
-        bytes >= mb -> "%.2f MB".format(bytes / mb.toDouble())
-        bytes >= kb -> "%.2f KB".format(bytes / kb.toDouble())
-        else -> "$bytes B"
-    }
 }
 
 data class InstallState(
@@ -375,18 +367,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Each CompletableDeferred signals when that task's extraction/installation is complete.
     // Allows runTask() to suspend until the full install pipeline finishes.
     //
+    // Story 1.7 Code Review Round 8: Changed from mutableMapOf to ConcurrentHashMap for thread-safety
+    // Multiple coroutines may access this map concurrently (queue processor, download observers, cancellation)
+    //
     // This design supports:
     // 1. Task-specific signal management (no state collision between tasks)
     // 2. Clean cancellation on pause/cancel without affecting other tasks
     // 3. Easy lookup and cleanup for any task by releaseName
     // 4. Future extensibility if parallel task execution is ever needed
-    private val taskCompletionSignals = mutableMapOf<String, CompletableDeferred<Unit>>()
+    private val taskCompletionSignals = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
 
     // Channel to signal when a new task has been added to the queue.
+    // Story 1.7 Code Review Round 6: Changed from CONFLATED to RENDEZVOUS to prevent signal loss
     // This solves the race condition where startQueueProcessor() exits before
     // the StateFlow has emitted the newly inserted task from Room DB.
-    // Using CONFLATED channel: only the most recent signal matters (task was added)
-    private val taskAddedSignal = Channel<Unit>(Channel.CONFLATED)
+    // RENDEZVOUS ensures no signals are lost during rapid task additions,
+    // with backpressure handling via trySend() which returns false if buffer is full.
+    private val taskAddedSignal = Channel<Unit>(Channel.RENDEZVOUS)
+
+    // Mutex to prevent concurrent executions of verifyPendingInstallations
+    // Story 1.7 Code Review Round 8: Prevents race condition when multiple triggers
+    // (app startup, resume, user action) attempt verification simultaneously
+    private val verificationMutex = Mutex()
 
     private var isPermissionFlowActive = false
     private var previousMissingCount = 0
@@ -545,7 +547,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isFirstInQueue = game.releaseName == firstInQueue,
                 isDownloaded = isDownloaded,
                 isFavorite = game.isFavorite,
-                size = if (game.sizeBytes != null && game.sizeBytes > 0) formatSize(game.sizeBytes) else if (game.sizeBytes == -1L) "Error" else null,
+                size = if (game.sizeBytes != null && game.sizeBytes > 0) InstallUtils.formatBytes(game.sizeBytes) else if (game.sizeBytes == -1L) "Error" else null,
                 sizeBytes = game.sizeBytes ?: 0L,
                 description = game.description,
                 screenshotUrls = game.screenshotUrls,
@@ -1384,29 +1386,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Log.i(TAG, "Staged APK found for ${task.releaseName}, launching installer directly")
             updateTaskStatus(task.releaseName, InstallTaskStatus.INSTALLING)
             _events.emit(MainEvent.InstallApk(stagedApk))
-            updateTaskStatus(task.releaseName, InstallTaskStatus.COMPLETED)
-            delay(2000)
-            // Clean up temp install files to prevent zombie recovery leak
-            // These files were created during download/extraction but are no longer needed
-            withContext(Dispatchers.IO) {
-                repository.cleanupInstall(task.releaseName)
-            }
-            repository.removeFromQueue(task.releaseName)
+
+            // Story 1.7 Code Review Round 9 Fix: Set PENDING_INSTALL instead of COMPLETED
+            // Installation is non-blocking - we need to verify via PackageManager later.
+            // Do NOT cleanup or remove from queue - verification handles that.
+            updateTaskStatus(task.releaseName, InstallTaskStatus.PENDING_INSTALL)
+
+            // Story 1.7: Do NOT cleanup or remove from queue here
+            // The task must persist with PENDING_INSTALL status until verifyPendingInstallations()
+            // confirms the package is installed via PackageManager.
+            // Cleanup will happen after successful verification in checkInstallationStatusSilent().
             progressThrottleMap.remove(task.releaseName)
             totalBytesWrittenSet.remove(task.releaseName)
-            updateOverlayAfterTaskComplete(task.releaseName)
-            refreshInstalledPackages()
+
+            withContext(Dispatchers.Main) {
+                updateOverlayAfterTaskComplete(task.releaseName)
+                refreshInstalledPackages()
+            }
+
             taskCompletionSignals[task.releaseName]?.complete(Unit)
             taskCompletionSignals.remove(task.releaseName)
             return
         }
 
                 if (isExtractionComplete) {
-                    // Extraction already complete - skip WorkManager and go directly to installation
-                    Log.i(TAG, "Extraction already complete for ${task.releaseName}, skipping to installation")
-                    handleDownloadSuccess(task.releaseName)
-                    // Wait for extraction/installation to complete before returning
-                    taskCompletionSignals[task.releaseName]?.await()    
+                    // Story 1.7: Zombie Recovery - skip download/extraction, go directly to installation
+                    Log.i(TAG, "Zombie Recovery: Extraction complete for ${task.releaseName}, starting installation at 94%")
+                    runInstallationPhase(task, game)
+                    // Wait for installation to complete before returning
+                    taskCompletionSignals[task.releaseName]?.await()
                     return
                 }
         Log.i(TAG, "Enqueueing WorkManager download for: ${task.releaseName}")
@@ -1426,12 +1434,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         //
         // Adaptive timeout calculation:
         // - Base: 5 minutes minimum (for small games and overhead)
-        // - Scale: 1 minute per 500 MB (accounts for download + extraction)
+        // - Scale: 2 minutes per 500 MB (accounts for download + extraction on Quest hardware)
         // - Cap: 6 hours maximum (for very large games like 100GB+)
         // Note: Previous 2-hour cap was insufficient for games >60GB
+        // Code Review Fix (Item 5): Increased from 1 min/500MB to 2 min/500MB for Quest VR hardware
+        // Quest headsets may have slower storage and CPU compared to typical Android devices
         val fileSizeMb = task.totalBytes / (1024 * 1024)
         val baseTimeoutMinutes = 5L
-        val scaledMinutes = fileSizeMb / 500 // 1 minute per 500 MB
+        val scaledMinutes = fileSizeMb / 250 // 2 minutes per 500 MB (1 min per 250 MB)
         val timeoutMinutes = (baseTimeoutMinutes + scaledMinutes).coerceIn(5, 360)
         val timeoutMs = timeoutMinutes * 60 * 1000L
 
@@ -1521,6 +1531,75 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // Store the job in the map for lifecycle management
         downloadObserverJobs[releaseName] = job
+    }
+
+    /**
+     * Story 1.7: Zombie Recovery - Run installation phase only (OBB + APK staging).
+     * This method is called when extraction is already complete (extraction_done.marker exists).
+     * It skips download/extraction and starts installation at 94% progress.
+     */
+    private suspend fun runInstallationPhase(task: InstallTaskState, game: GameData) {
+        Log.i(TAG, "Starting installation phase for ${task.releaseName}")
+
+        // Update status to INSTALLING
+        updateTaskStatus(task.releaseName, InstallTaskStatus.INSTALLING)
+
+        currentTaskJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Call repository.installFromExtracted which only does OBB + staging
+                val apkFile = repository.installFromExtracted(
+                    game = game
+                ) { message, progress, current, total ->
+                    updateTaskProgress(task.releaseName, progress, current, total)
+                }
+
+                // APK is ready for installation
+                if (apkFile != null && apkFile.exists()) {
+                    Log.i(TAG, "APK ready for installation: ${apkFile.absolutePath}")
+                    withContext(Dispatchers.Main) {
+                        _events.emit(MainEvent.InstallApk(apkFile))
+                    }
+                }
+
+                // Story 1.7: Set status to PENDING_INSTALL after launching installer
+                // (waiting for user to complete installation in system installer)
+                updateTaskStatus(task.releaseName, InstallTaskStatus.PENDING_INSTALL)
+
+                // Story 1.7 Code Review Round 9 Fix: Do NOT remove from queue
+                // The task must persist with PENDING_INSTALL status in DB so it can be:
+                // 1. Restored after app restart
+                // 2. Verified via verifyPendingInstallations()
+                // 3. Cleaned up only after successful PackageManager verification
+                // Queue processor will skip PENDING_INSTALL tasks (they're not in QUEUED status).
+                progressThrottleMap.remove(task.releaseName)
+                totalBytesWrittenSet.remove(task.releaseName)
+
+                withContext(Dispatchers.Main) {
+                    updateOverlayAfterTaskComplete(task.releaseName)
+                    refreshInstalledPackages()
+                }
+
+            } catch (e: CancellationException) {
+                Log.d(TAG, "Installation cancelled for ${task.releaseName}")
+                updateTaskStatus(task.releaseName, InstallTaskStatus.PAUSED)
+                taskCompletionSignals[task.releaseName]?.cancel()
+                taskCompletionSignals.remove(task.releaseName)
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Installation failed for ${task.releaseName}", e)
+                updateTaskStatus(task.releaseName, InstallTaskStatus.FAILED)
+                withContext(Dispatchers.Main) {
+                    _events.emit(MainEvent.ShowMessage("Installation failed: ${e.message}"))
+                }
+            } finally {
+                if (activeReleaseName == task.releaseName) {
+                    activeReleaseName = null
+                }
+                // Signal task completion to allow queue processor to continue
+                taskCompletionSignals[task.releaseName]?.complete(Unit)
+                taskCompletionSignals.remove(task.releaseName)
+            }
+        }
     }
 
     private suspend fun handleDownloadSuccess(releaseName: String) {
@@ -1653,18 +1732,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    // Mark as completed and clean up
-                    updateTaskStatus(releaseName, InstallTaskStatus.COMPLETED)
+                    // Story 1.7: Set status to PENDING_INSTALL after launching installer
+                    // (waiting for user to complete installation in system installer)
+                    updateTaskStatus(releaseName, InstallTaskStatus.PENDING_INSTALL)
 
-                    delay(2000)
+                    // Story 1.7: DO NOT clean up temp files yet - wait for verification
+                    // Cleanup will happen after checkInstallationStatus() confirms installation
 
-                    // Now clean up temp files (after successful installation trigger)
-                    if (task != null) {
-                        repository.cleanupInstall(releaseName)
-                    }
-
-                    // Remove completed task from Room DB
-                    repository.removeFromQueue(releaseName)
+                    // CRITICAL FIX: Do NOT remove from queue - PENDING_INSTALL must persist in DB
+                    // so it can be restored after app restart and verified.
+                    // The task stays in the queue with PENDING_INSTALL status until verification completes.
+                    // Queue processor will skip PENDING_INSTALL tasks (they're not processing).
                     progressThrottleMap.remove(releaseName)
                     totalBytesWrittenSet.remove(releaseName)
 
@@ -1958,7 +2036,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val freed = repository.clearCache()
-                _events.emit(MainEvent.ShowMessage("Cache cleared, freed ${formatSize(freed)}"))
+                _events.emit(MainEvent.ShowMessage("Cache cleared, freed ${InstallUtils.formatBytes(freed)}"))
             } catch (e: Exception) {
                 _events.emit(MainEvent.ShowMessage("Failed to clear cache: ${e.message}"))
             }
@@ -1987,11 +2065,204 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun formatSize(bytes: Long): String {
-        if (bytes <= 0) return "0 B"
-        val units = arrayOf("B", "KB", "MB", "GB", "TB")
-        val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
-        return String.format(Locale.US, "%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
+    /**
+     * Story 1.7: Verify all PENDING_INSTALL tasks automatically.
+     * This method should be called when app returns to foreground (onResume in MainActivity).
+     *
+     * It scans the install queue for tasks with PENDING_INSTALL status and verifies each one.
+     * Successfully verified installations are marked COMPLETED and cleaned up.
+     *
+     * Code Review Fix: Consolidates UI messages to prevent Snackbar spam during batch verification.
+     */
+    fun verifyPendingInstallations() {
+        viewModelScope.launch(Dispatchers.IO) {
+            // Story 1.7 Code Review Round 8: Use Mutex to prevent concurrent executions
+            // Multiple triggers (startup, resume, user action) could cause overlapping verification
+            verificationMutex.withLock {
+                try {
+                // Get all PENDING_INSTALL tasks from the queue
+                val pendingTasks = installQueue.value.filter { it.status == InstallTaskStatus.PENDING_INSTALL }
+
+                // Code Review Note (Item 6): Staged APK cleanup when user cancels installation
+                // If user cancels the system installation, the staged APK remains in externalFilesDir
+                // This is acceptable because:
+                // 1. The APK will be cleaned up on next app restart via verifyAndCleanupInstalls()
+                // 2. User can retry installation by clicking "Verify" button
+                // 3. APK is named by packageName, so reinstall simply overwrites
+                // 4. Storage impact is limited (one APK per pending installation)
+                // To implement age-based cleanup, we'd need to track when status became PENDING_INSTALL
+
+                if (pendingTasks.isEmpty()) {
+                    Log.d(TAG, "No pending installations to verify")
+                    return@withLock
+                }
+
+                Log.i(TAG, "Found ${pendingTasks.size} pending installation(s) to verify")
+
+                // Code Review Fix: Track verification results to consolidate UI messages
+                // Story 1.7 Code Review Round 9: Added failure tracking and detailed logging
+                var verifiedCount = 0
+                var pendingCount = 0
+                var failedCount = 0
+                val failedGames = mutableListOf<String>()
+
+                // Verify each pending installation (silently - no individual messages)
+                // Code Review Fix (Item 4): Add delay between installations to prevent UI confusion
+                // Multiple system installer dialogs opening simultaneously can overwhelm users
+                for ((index, task) in pendingTasks.withIndex()) {
+                    val game = games.value.find { it.releaseName == task.releaseName }
+                    if (game != null) {
+                        Log.d(TAG, "Verifying pending installation: ${task.releaseName}")
+
+                        // If this is not the first task and verification will succeed, add delay
+                        // This prevents multiple installer dialogs from opening simultaneously
+                        if (index > 0) {
+                            delay(2000) // 2 second delay between installations
+                        }
+
+                        val wasVerified = checkInstallationStatusSilent(game.packageName, game.version, task.releaseName)
+                        if (wasVerified) verifiedCount++ else pendingCount++
+                    } else {
+                        Log.w(TAG, "Game not found in catalog for pending installation: ${task.releaseName}")
+                        // Game removed from catalog? Track as failure and clean up
+                        failedCount++
+                        failedGames.add(task.gameName)
+                        repository.cleanupInstall(task.releaseName)
+                        repository.removeFromQueue(task.releaseName)
+                    }
+                }
+
+                // Story 1.7 Code Review Round 9: Log detailed failure info for diagnostics
+                if (failedGames.isNotEmpty()) {
+                    Log.e(TAG, "Verification failed for ${failedGames.size} game(s): ${failedGames.joinToString(", ")}")
+                }
+
+                // Code Review Fix: Show consolidated message instead of per-task messages
+                // Story 1.7 Code Review Round 9: Include failure info in message when relevant
+                if (verifiedCount > 0 || pendingCount > 0 || failedCount > 0) {
+                    val message = when {
+                        // All verified
+                        verifiedCount > 0 && pendingCount == 0 && failedCount == 0 ->
+                            if (verifiedCount == 1) "Installation verified successfully"
+                            else "$verifiedCount installations verified successfully"
+                        // All pending
+                        verifiedCount == 0 && pendingCount > 0 && failedCount == 0 ->
+                            if (pendingCount == 1) "Waiting for installation to complete..."
+                            else "$pendingCount installations pending..."
+                        // Some failed (include failure info)
+                        failedCount > 0 -> {
+                            val parts = mutableListOf<String>()
+                            if (verifiedCount > 0) parts.add("$verifiedCount verified")
+                            if (pendingCount > 0) parts.add("$pendingCount pending")
+                            parts.add("$failedCount failed")
+                            parts.joinToString(", ")
+                        }
+                        // Mixed verified and pending
+                        else -> "$verifiedCount verified, $pendingCount pending"
+                    }
+                    withContext(Dispatchers.Main) {
+                        _events.emit(MainEvent.ShowMessage(message))
+                        if (verifiedCount > 0) {
+                            refreshInstalledPackages()
+                        }
+                    }
+                }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to verify pending installations", e)
+                }
+            } // end verificationMutex.withLock
+        }
+    }
+
+    /**
+     * Story 1.7: Post-Install Verification - Check if installation was successful.
+     * This method should be called when app returns to foreground or user clicks "Verify".
+     * It checks PackageManager for installed package and verifies version matches catalog.
+     *
+     * @param packageName The package name to verify
+     * @param catalogVersionCode The version code from catalog (String to handle Room schema)
+     * @param releaseName The release name for cleanup if verification succeeds
+     */
+    fun checkInstallationStatus(packageName: String, catalogVersionCode: String, releaseName: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val wasVerified = checkInstallationStatusSilent(packageName, catalogVersionCode, releaseName)
+            withContext(Dispatchers.Main) {
+                if (wasVerified) {
+                    _events.emit(MainEvent.ShowMessage("Installation verified successfully"))
+                    refreshInstalledPackages()
+                } else {
+                    _events.emit(MainEvent.ShowMessage("Waiting for installation to complete..."))
+                }
+            }
+        }
+    }
+
+    /**
+     * Story 1.7 Code Review Fix: Silent version of checkInstallationStatus for batch verification.
+     * Does not emit UI messages - caller is responsible for consolidated messaging.
+     *
+     * @return true if installation was successfully verified, false if still pending or failed
+     */
+    private suspend fun checkInstallationStatusSilent(
+        packageName: String,
+        catalogVersionCode: String,
+        releaseName: String
+    ): Boolean {
+        return try {
+            Log.i(TAG, "Checking installation status for $packageName (catalog version: $catalogVersionCode)")
+
+            // Query PackageManager for installed package
+            val pm = getApplication<Application>().packageManager
+            val packageInfo = try {
+                pm.getPackageInfo(packageName, 0)
+            } catch (e: Exception) {
+                Log.w(TAG, "Package $packageName not found in PackageManager")
+                null
+            }
+
+            if (packageInfo == null) {
+                Log.d(TAG, "Package $packageName not installed yet")
+                return false
+            }
+
+            // Story 1.7: Parse catalog versionCode (String) to Long for comparison
+            // Handle edge cases: empty string, malformed, null -> 0L
+            val catalogVersion = catalogVersionCode.toLongOrNull() ?: 0L
+
+            // Get installed version (handle both legacy and long version codes)
+            val installedVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                packageInfo.longVersionCode
+            } else {
+                packageInfo.versionCode.toLong()
+            }
+
+            Log.d(TAG, "Version comparison for $packageName: catalog=$catalogVersion, installed=$installedVersion")
+
+            // Story 1.7 Code Review Fix: Use >= comparison instead of strict equality
+            // This allows verification to succeed if user installs a newer version than catalog
+            if (installedVersion >= catalogVersion) {
+                Log.i(TAG, "Installation verification successful for $packageName (installed version $installedVersion >= catalog $catalogVersion)")
+
+                // Mark task as COMPLETED before cleanup
+                updateTaskStatus(releaseName, InstallTaskStatus.COMPLETED)
+
+                // Clean up temp files after successful verification
+                repository.cleanupInstall(releaseName)
+
+                // Remove from queue now that verification is complete
+                repository.removeFromQueue(releaseName)
+
+                true
+            } else {
+                Log.w(TAG, "Version too old for $packageName: installed $installedVersion < catalog $catalogVersion")
+                // Installed version is older than catalog - user may have restored from backup
+                false
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to check installation status for $packageName", e)
+            false
+        }
     }
 
 }

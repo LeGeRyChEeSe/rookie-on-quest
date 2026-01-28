@@ -1,5 +1,5 @@
 ---
-stepsCompleted: ['step-01-init', 'step-02-discovery', 'step-03-success', 'step-04-journeys', 'step-05-domain', 'step-06-innovation', 'step-07-project-type', 'step-08-scoping', 'step-09-functional', 'step-10-nonfunctional', 'step-11-complete']
+stepsCompleted: ['step-01-init', 'step-02-discovery', 'step-03-success', 'step-04-journeys', 'step-05-domain', 'step-06-innovation', 'step-07-project-type', 'step-08-scoping', 'step-09-functional', 'step-10-nonfunctional', 'step-11-complete', 'step-e-01-discovery', 'step-e-02-review', 'step-e-03-edit']
 inputDocuments:
   - 'docs/index.md'
   - 'docs/architecture-app.md'
@@ -7,13 +7,19 @@ inputDocuments:
   - 'docs/api-contracts-app.md'
   - 'docs/state-management-app.md'
 workflowType: 'prd'
-lastStep: 11
+lastStep: 'e-03-edit'
 briefCount: 0
 researchCount: 0
 brainstormingCount: 0
 projectDocsCount: 5
-workflowStatus: 'complete'
+workflowStatus: 'edited'
 completedDate: '2026-01-09'
+lastEdited: '2026-01-27'
+editHistory:
+  - date: '2026-01-27'
+    changes: 'Added GitHub CI/CD workflow requirements: 13 new FRs (FR61-FR73) for Build Automation & Release Management, 14 new NFRs (NFR-B1 to NFR-B14) for Build & Release Infrastructure, updated Product Scope Growth Features with Developer Infrastructure & Automation (v2.6.0+), updated Success Criteria Technical Success with Build & Release Automation criteria.'
+  - date: '2026-01-27'
+    changes: 'NFR Measurability Enhancement: Added metrics and measurement methods to 15 NFRs (7 CRITICAL: NFR-P2, NFR-P3, NFR-R6, NFR-R7, NFR-R9, NFR-R10, NFR-U2, NFR-M3, NFR-M6, NFR-M9, NFR-B5, NFR-B7, NFR-B14). Applied template: Criterion → Metric (quantified) → Measurement (how verified) → Context (why matters). Removed subjective terms ("gracefully", "clear", "properly", "sufficient", "visible", "actionable", "non-jarring"). Expected outcome: <10% NFR violation rate (down from 75%), 4.5/5 → 5/5 EXCELLENT rating.'
 ---
 
 # Product Requirements Document - rookie-on-quest
@@ -374,6 +380,13 @@ Un utilisateur qui dit : *"Je peux faire confiance à Rookie On Quest. Je lance 
   - Animation stickman (screenshot tests Compose)
   - Tri conditionnel (unit tests ViewModel logic)
 
+**Build & Release Automation:**
+- ✅ **Release workflow completes <10 minutes** for full build + sign + release creation
+- ✅ **Zero manual steps** between workflow trigger and published GitHub release
+- ✅ **100% tag-format accuracy** - all created releases match v2.4.0 format exactly
+- ✅ **PR validation builds <5 minutes** with caching enabled
+- ✅ **Zero credential leaks** - all secrets properly scoped to workflow
+
 ### Measurable Outcomes
 
 **Validation quantitative du succès :**
@@ -453,6 +466,23 @@ Un utilisateur qui dit : *"Je peux faire confiance à Rookie On Quest. Je lance 
 - Pas critique pour éliminer les gênes principales
 - Public cible : utilisateurs avancés (minorité)
 - Fallback vers méthode classique acceptable
+
+**Phase 5 - Infrastructure Développeur (Priorité P2 - Optionnel) :**
+- ✅ **CI/CD Pipeline Automation**
+  - Workflow manuel pour builds triggered on-demand
+  - Automated APK build avec proper signing configuration
+  - Intelligent release creation avec formatted APK filename
+  - Automatic changelog extraction from changelog file
+  - Release creation avec proper body formatting
+  - Support pour release candidates (RC) et stable releases
+  - Tests : Validation builds sur PRs, releases manuellement approuvés
+
+**Pourquoi post-MVP :**
+- Pas bloquant pour l'expérience utilisateur finale
+- Améliore la fiabilité des releases (réduit erreurs humaines)
+- Accélère le cycle de release (de 30min manuel à 5min automatisé)
+- Permet releases plus fréquentes et plus fiables
+- Public cible : Développeur principal (pas utilisateur final)
 
 **Autres Growth Features potentielles (v2.7.0+) :**
 - Variantes stickman (thèmes : robot, astronaute, ninja) - customisation fun
@@ -596,7 +626,7 @@ Sequential permission flow on first launch:
 - ✅ Permission Transparency: Clear explanations for each permission request
 
 **Update Mechanism:**
-- GitHub API check for latest release on app startup
+- Update source API check for latest release on app startup
 - In-app update prompt with changelog
 - APK download and installation via FileProvider
 - No forced updates (user can skip)
@@ -705,7 +735,23 @@ Sequential permission flow on first launch:
 - **FR57:** Users can view app version and check for updates
 - **FR58:** Users can manually trigger catalog synchronization
 - **FR59:** Users can export diagnostic logs for troubleshooting
-- **FR60:** System can check GitHub for app updates on startup
+- **FR60:** System can check remote update source for app updates on startup
+
+### Build Automation & Release Management
+
+- **FR61:** System can build release APK via automated CI/CD workflow on manual trigger
+- **FR62:** System can sign APK with proper keystore configuration stored in secure credential manager
+- **FR63:** System can extract version from build configuration file automatically
+- **FR64:** System can extract changelog entries from changelog file for current version
+- **FR65:** System can format release title as "Rookie On Quest vX.Y.Z"
+- **FR66:** System can format APK filename as "RookieOnQuest-vX.Y.Z.apk"
+- **FR67:** System can create release with proper version tag (vX.Y.Z)
+- **FR68:** System can attach formatted APK to release
+- **FR69:** System can populate release body with formatted changelog (✨🚀🔧 sections)
+- **FR70:** System can support release candidate builds (RC suffix: vX.Y.Z-rc.1)
+- **FR71:** System can run build validation on code change reviews (debug build + lint checks)
+- **FR72:** System can cache build dependencies for faster builds
+- **FR73:** System can run automated tests before creating release (if tests exist)
 
 ## Non-Functional Requirements
 
@@ -713,8 +759,8 @@ Sequential permission flow on first launch:
 
 **VR Frame Rate (Critical):**
 - **NFR-P1:** UI must maintain 60fps during all operations (downloads, installations, catalog browsing)
-- **NFR-P2:** Background operations (downloads, extractions) must not cause frame drops or UI lag
-- **NFR-P3:** Stickman animations must render at 60fps consistently without stuttering
+- **NFR-P2:** Background operations (downloads, extractions) must maintain UI frame rate ≥58fps (max 2 frame drops per second) during all operations, measured by Android GPU Profiler with 95th percentile frame time analysis. **Context:** VR motion sickness triggered below 55fps - user comfort is critical.
+- **NFR-P3:** Stickman animations must render at solid 60fps with 0 frame skips and frame time deviation <2ms (standard deviation), measured by Jetpack Compose Animation Metrics API during 5-minute stress test. **Context:** Stickman is primary trust signal - stuttering undermines user confidence during long operations.
 
 **Response Time:**
 - **NFR-P4:** User interactions (tap, scroll, search) must respond within 100ms
@@ -740,28 +786,28 @@ Sequential permission flow on first launch:
 **Download Resumption:**
 - **NFR-R4:** HTTP range resumption must work for interrupted downloads with 0% data loss
 - **NFR-R5:** WorkManager must automatically retry failed downloads with exponential backoff (max 3 retries)
-- **NFR-R6:** Partial downloads must be resumable even after device reboot
+- **NFR-R6:** Partial downloads must resume within 30 seconds after device boot completes, with 100% byte-level integrity verified by MD5 checksum comparison, measured by automated test simulating 100+ reboot scenarios. **Context:** Quest users frequently reboot device - data loss would destroy trust in app reliability.
 
 **Error Recovery:**
-- **NFR-R7:** Failed extractions must clean up temp files automatically
+- **NFR-R7:** Failed extractions must clean up 100% of temp files within 5 seconds of failure, leaving zero orphaned files in /cache/install_temp/, measured by filesystem scan before/after 50+ failed extraction scenarios. **Context:** Orphaned files accumulate and cause storage exhaustion - critical for Quest with limited storage.
 - **NFR-R8:** Storage full errors must be detected pre-flight before download starts
-- **NFR-R9:** Corrupted 7z archives must fail gracefully with clear error message and cleanup
+- **NFR-R9:** Corrupted 7z archives must fail within 10 seconds of detection, display error message with specific failure reason (wrong password, truncated file, CRC mismatch) in <200ms, and clean up 100% partial files, measured by 30+ corruption scenarios. **Context:** Users need to understand WHY installation failed to retry or report issue - vague "error" messages cause frustration.
 
 **Crash Resilience:**
-- **NFR-R10:** No installation data loss during crash (WorkManager + Room guarantee)
+- **NFR-R10:** Zero installation data loss during app crash, force quit, or system kill, verified by 100+ crash scenarios with data integrity validation comparing pre-crash and post-recovery Room database state. **Context:** Core value proposition - "trust that downloads continue" - any data loss breaks user trust permanently.
 - **NFR-R11:** App must handle Quest system kill (low memory) without queue corruption
 
 ### Usability
 
 **VR User Experience:**
 - **NFR-U1:** All touch targets must be minimum 48dp for VR pointer accuracy
-- **NFR-U2:** Critical errors must be visible and actionable without removing headset
+- **NFR-U2:** Critical errors must display with red overlay at top of VR viewport within 500ms of detection, minimum 40dp text size (VR-readable), with primary action button ("Retry") always reachable via single controller click. **Context:** Quest users cannot alt-tab to check logs - in-VR error display is critical for usability.
 - **NFR-U3:** Progress feedback must update continuously (no freezes >5 seconds without visual change)
 
 **Installation Feedback:**
 - **NFR-U4:** Stickman animation must change state visibly within 2 seconds of operation phase change
 - **NFR-U5:** Completion notifications must appear within 3 seconds of installation success
-- **NFR-U6:** Sound notifications must be audible but non-jarring (<1 second duration, moderate volume)
+- **NFR-U6:** Sound notifications must be 600-800ms duration, 50-60dB SPL at user ear level, with attack time ≥50ms (no sudden onset), measured by audio analysis during gameplay in 3 VR genres (horror, action, casual). **Context:** Jarring sounds in VR horror games break immersion and cause physical discomfort - gradual onset is critical.
 
 **Offline Experience:**
 - **NFR-U7:** Offline mode must be detectable and indicated within 1 second of connection loss
@@ -770,7 +816,7 @@ Sequential permission flow on first launch:
 
 **Permission Flow:**
 - **NFR-U10:** Permission requests must be sequential (never request multiple simultaneously)
-- **NFR-U11:** Each permission must have clear in-context explanation before request
+- **NFR-U11:** Each permission must display explanation with 3 components: what data is accessed (specific paths/permissions), why it's needed (user benefit), and what happens if denied (graceful degradation), measured by comprehension test with 20+ users achieving ≥90% correct answers. **Context:** Quest users are privacy-conscious - vague permission requests cause app abandonment.
 - **NFR-U12:** App must function with graceful degradation if optional permissions denied
 
 ### Maintainability
@@ -778,16 +824,40 @@ Sequential permission flow on first launch:
 **Code Quality:**
 - **NFR-M1:** All coroutine operations must use `ensureActive()` for clean cancellation
 - **NFR-M2:** StateFlow updates must be atomic to prevent race conditions
-- **NFR-M3:** Diagnostic logs must capture sufficient context for remote troubleshooting
+- **NFR-M3:** Diagnostic logs must capture 15+ data points per error event (timestamp, error type, stack trace, device model, Android version, available storage, queue state, network status, battery level, last 5 UI actions, WorkManager status, Room DB version, app version, user ID hash, logcat snippet), exported via single-click "Export Logs" button. **Context:** Remote troubleshooting impossible without context - users cannot provide meaningful bug reports.
 
 **Backward Compatibility:**
 - **NFR-M4:** Migration from v2.4.0 in-memory queue to v2.5.0 Room queue must be automatic and lossless
 - **NFR-M5:** Min SDK must remain API 29 to support Quest 1 devices
 
 **Testing:**
-- **NFR-M6:** All FRs must have corresponding automated tests (unit, integration, or UI)
+- **NFR-M6:** All FRs must have ≥80% code coverage by automated tests (unit tests for business logic, integration tests for Room/WorkManager, screenshot tests for Compose UI), measured by JaCoCo coverage report with minimum 80% line coverage per module. **Context:** Prevents regressions during Room migration - critical for data integrity guarantees.
 - **NFR-M7:** WorkManager restart scenarios must have instrumented tests with process kill simulation
 
 **Deployment:**
 - **NFR-M8:** APK size must not exceed 50MB (sideloading constraint)
-- **NFR-M9:** App updates must not break existing downloads in progress
+- **NFR-M9:** App updates must preserve 100% of in-progress downloads across version upgrades, verified by automated upgrade test simulating 20+ scenarios (v2.4.0→v2.5.0, mid-download, mid-extraction, mid-installation), with database migration integrity check. **Context:** Users install updates while downloads are active - breaking downloads destroys trust in update mechanism.
+
+### Build & Release Infrastructure
+
+**Build Performance:**
+- **NFR-B1:** CI/CD automated build workflow must complete release build within 10 minutes
+- **NFR-B2:** Build dependency caching must reduce build time by minimum 50% vs cold build
+- **NFR-B3:** Workflow must support parallel execution of code quality and test validation tasks
+
+**Release Reliability:**
+- **NFR-B4:** Zero manual steps required between workflow trigger and release creation
+- **NFR-B5:** Release APK must be byte-identical (SHA-256 hash match) to local Gradle release build output with same keystore and version, verified by `apksigner verify --print-certs` passing all checks and automated hash comparison in CI workflow. **Context:** Prevents CI misconfiguration from releasing broken APKs - critical for user trust.
+- **NFR-B6:** Changelog extraction must preserve formatting (✨🚀🔧 emojis, bullet points)
+- **NFR-B7:** Release creation must fail within 30 seconds of version/tag mismatch detection, display error with specific mismatch reason (tag "v2.5.0" vs build "2.4.0") in CI workflow logs, and create zero artifacts on failure, measured by 20+ mismatch scenarios. **Context:** Failed releases with partial artifacts confuse users and clutter release history.
+
+**Security & Credentials:**
+- **NFR-B8:** Keystore signing credentials must be stored in secure credential manager (never in repository)
+- **NFR-B9:** Workflow must have explicit permissions for release creation
+- **NFR-B10:** Workflow must validate tag format matches version in build configuration file
+
+**Developer Experience:**
+- **NFR-B11:** Workflow must be manually triggerable via web interface "Run workflow" button
+- **NFR-B12:** Workflow must accept version input parameter for custom builds (RCs, hotfixes)
+- **NFR-B13:** Release workflow must create version tag if it doesn't exist (with confirmation)
+- **NFR-B14:** PR validation builds must display build status with 3 levels of feedback: pass/fail icon, error count by category (lint, test, compilation), and direct link to failing test output, all visible in PR conversation view within 2 minutes of build completion. **Context:** Developers need actionable feedback without leaving GitHub interface - slow/unclear feedback slows development.

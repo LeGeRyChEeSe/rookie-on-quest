@@ -219,6 +219,147 @@
       </flow>
 
     </protocol>
+
+    <protocol name="detect_worktree" desc="Universal git worktree story detection - compatible with any agent">
+      <objective>Detect if running in isolated git worktree and auto-configure story context from .story-id file</objective>
+
+      <critical>This protocol enables AGENT-AGNOSTIC worktree isolation - works with Claude, Qwen, Cursor, Copilot, or any other agent</critical>
+
+      <flow>
+        <step n="1" title="Check for Worktree Environment">
+          <action>Check if .story-id file exists in current working directory</action>
+
+          <check if=".story-id file exists">
+            <action>Read .story-id file content (strip whitespace, trim newlines)</action>
+            <action>Store story ID in variable: {worktree_story_id}</action>
+
+            <output>🌲 **Git Worktree Detected**
+              Story ID: {worktree_story_id}
+              Mode: Isolated development environment
+
+              **Auto-Configuration:**
+              - Using story ID from .story-id file
+              - Story context auto-loaded from worktree environment
+              - Changes isolated to this worktree
+              - PR will be created on completion (not direct merge)
+            </output>
+          </check>
+
+          <check if=".story-id file does NOT exist">
+            <output>ℹ️ No .story-id found - running in main repository
+              Standard workflow mode: will search sprint-status for next story
+            </output>
+            <action>Set {worktree_story_id} = empty</action>
+            <action>Skip to step 4 (continue normal workflow)</action>
+          </check>
+        </step>
+
+        <step n="2" title="Load Worktree Context">
+          <check if="{worktree_story_id} is NOT empty">
+
+            <!-- Load story file -->
+            <action>Find story file using pattern: {story_dir}/{worktree_story_id}*.md</action>
+            <check if="story file found">
+              <action>Read COMPLETE story file</action>
+              <action>Store story content in variable: {worktree_story_content}</action>
+              <action>Extract story title from content</action>
+            </check>
+
+            <!-- Load .story-files manifest if exists -->
+            <check if=".story-files file exists">
+              <action>Read .story-files manifest</action>
+              <action>Store manifest content in variable: {worktree_story_files}</action>
+              <note>This tracks which files are locked by this story to prevent conflicts</note>
+            </check>
+
+            <output>✅ **Worktree Context Loaded**
+              Story: {worktree_story_id}
+              Files Manifest: {worktree_story_files exists ? 'Loaded' : 'Not found'}
+            </output>
+          </check>
+        </step>
+
+        <step n="3" title="Configure Workflow Variables">
+          <check if="{worktree_story_id} is NOT empty">
+            <action>Set workflow variable: story_path = path to discovered story file</action>
+            <action>Set workflow variable: {{story_path}} = {worktree_story_id} story file path</action>
+
+            <note>These variables override sprint-status search - workflow uses this story directly</note>
+
+            <output>🎯 **Story Auto-Selected**
+              File: {story_path}
+              All workflow operations will target this story
+            </output>
+          </check>
+        </step>
+
+        <step n="4" title="Conflict Prevention Check">
+          <check if="{worktree_story_id} is NOT empty AND .story-files exists">
+            <action>Pars storyFiles section from .story-files manifest</action>
+            <action>List file patterns locked by this story</action>
+
+            <output>🔒 **Conflict Prevention Active**
+              Locked Files (from .story-files):
+              {list each storyFiles pattern}
+
+              Other agents working on these files should wait until this story is complete
+            </output>
+          </check>
+        </step>
+      </flow>
+
+      <agent-compatibility>
+        <desc>This protocol works with ANY agent that can read files and parse simple text</desc>
+
+        <support agent="Claude" level="full">File reading via Read tool, bash via Bash tool</support>
+        <support agent="Qwen" level="full">Identical capabilities to Claude</support>
+        <support agent="Cursor" level="full">Natural file reading and command execution</support>
+        <support agent="Copilot" level="full">VS Code extension reads files seamlessly</support>
+        <support agent="Custom" level="full">Any agent with file read + execute capabilities</support>
+        <support agent="Human" level="full">Manual workflow documented in CONTRIBUTING.md</support>
+      </agent-compatibility>
+
+      <integration>
+        <title>How to Use This Protocol</title>
+
+        <option n="1" method="Automatic Invocation">
+          <desc>Workflows that support worktree auto-detection invoke this protocol in Step 1</desc>
+          <example>
+            <!-- In workflow instructions.xml -->
+            <step n="1" goal="Detect worktree environment">
+              <action>invoke-protocol name="detect_worktree"</action>
+              <goto step="2" if="story_path already set" />
+            </step>
+          </example>
+        </option>
+
+        <option n="2" method="Manual Setup">
+          <desc>Initialize worktree using provided scripts, then run any workflow</desc>
+          <example>
+            # Linux/Mac
+            ./scripts/init-worktree.sh 1-8 agent1
+            cd worktrees/agent1-story-1-8
+
+            # Windows
+            scripts\init-worktree.bat 1-8 agent1
+            cd worktrees\agent1-story-1-8
+
+            # Then run ANY workflow - it auto-detects from .story-id
+          </example>
+        </option>
+      </integration>
+
+      <completion>
+        <desc>When story is complete, agent should create PR (not merge directly)</desc>
+
+        <actions>
+          <action n="1">Push branch to remote: git push -u origin {branch_name}</action>
+          <action n="2">Create PR: gh pr create --title "[Story {story_id}] {title}"</action>
+          <action n="3">Wait for PR approval and merge</action>
+          <action n="4">Cleanup worktree after merge: git worktree remove {worktree_path}</action>
+        </actions>
+      </completion>
+    </protocol>
   </protocols>
 
   <llm final="true">

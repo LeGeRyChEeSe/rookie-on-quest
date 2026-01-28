@@ -1,3 +1,13 @@
 <resources>
     <string name="app_name">Rookie On Quest</string>
+
+    <!-- Story 1.7: Installation task status messages for internationalization -->
+    <string name="status_queued">Queued</string>
+    <string name="status_downloading">Downloading...</string>
+    <string name="status_extracting">Extracting...</string>
+    <string name="status_installing">Installing...</string>
+    <string name="status_pending_install">Awaiting installer completion...</string>
+    <string name="status_paused">Paused</string>
+    <string name="status_completed">Completed</string>
+    <string name="status_failed">Failed</string>
 </resources>

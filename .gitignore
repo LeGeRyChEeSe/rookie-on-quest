@@ -62,9 +62,10 @@ temp_notes.md
 .roo/
 
 # Miscellaneous
-nul
+worktrees/
 node_modules/
 package-lock.json
+
 package.json
 GEMINI.md
 QWEN.md

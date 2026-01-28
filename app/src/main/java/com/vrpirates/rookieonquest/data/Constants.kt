@@ -143,6 +143,21 @@ object Constants {
     /**
      * Progress milestone for final APK installation (96%).
      * Preparing APK for installer launch.
+     *
+     * Story 1.7 Code Review Round 5: Progress milestone documentation
+     * ================================================================
+     * The progress milestones (92% → 93% → 94% → 96% → 98%) are intentionally
+     * non-linear to represent distinct installation phases:
+     *
+     * - 92%: Extraction complete
+     * - 93%: Preparing installation (parsing install.txt, detecting OBBs)
+     * - 94%: OBB movement phase
+     * - 96-98%: APK staging (with sub-progress for large APKs)
+     * - 98%: Launching system installer
+     *
+     * These discrete jumps provide clear phase transitions to users.
+     * Sub-progress within phases (e.g., 96-98% during staging) provides
+     * smooth feedback for time-consuming operations.
      */
     const val PROGRESS_MILESTONE_LAUNCHING_INSTALLER = 0.96f
 
@@ -426,5 +441,146 @@ object DownloadUtils {
         }
 
         return downloaded
+    }
+}
+
+/**
+ * Story 1.7 Code Review Round 5: Extracted install.txt parsing utilities for testability.
+ *
+ * This object provides pure functions for parsing install.txt files and related operations.
+ * Previously these were private methods in MainRepository, making them untestable.
+ */
+object InstallUtils {
+    /**
+     * Parse adb push command arguments with quote-aware splitting.
+     * Handles paths with spaces when quoted: adb push "path with spaces" "/sdcard/dest"
+     * Also handles unquoted simple paths: adb push source /sdcard/dest
+     *
+     * Story 1.7 Code Review Round 9: Added support for escaped quotes.
+     * Handles escape sequences: \" and \' within quoted strings.
+     * Example: adb push "path with \"escaped\" quote" /sdcard/dest
+     *
+     * This function is extracted from MainRepository to enable unit testing.
+     *
+     * @param argsString The string after "adb push " (e.g., '"source" "/dest"' or 'source /dest')
+     * @return Pair of (sourcePath, destPath), or (null, null) if parsing fails
+     */
+    fun parseAdbPushArgs(argsString: String): Pair<String?, String?> {
+        if (argsString.isBlank()) return null to null
+
+        val args = mutableListOf<String>()
+        var current = StringBuilder()
+        var inQuote = false
+        var quoteChar = ' '
+        var escapeNext = false
+
+        for (char in argsString) {
+            when {
+                // Handle escape character
+                escapeNext -> {
+                    // Add the escaped character literally
+                    current.append(char)
+                    escapeNext = false
+                }
+                // Backslash starts an escape sequence inside quotes
+                inQuote && char == '\\' -> {
+                    escapeNext = true
+                }
+                // Start of quoted string
+                !inQuote && (char == '"' || char == '\'') -> {
+                    inQuote = true
+                    quoteChar = char
+                }
+                // End of quoted string
+                inQuote && char == quoteChar -> {
+                    inQuote = false
+                    // Add the current token (may be empty for adjacent quotes)
+                    if (current.isNotEmpty()) {
+                        args.add(current.toString())
+                        current = StringBuilder()
+                    }
+                }
+                // Whitespace outside quotes = delimiter
+                !inQuote && char.isWhitespace() -> {
+                    if (current.isNotEmpty()) {
+                        args.add(current.toString())
+                        current = StringBuilder()
+                    }
+                }
+                // Regular character
+                else -> current.append(char)
+            }
+        }
+
+        // Add final token if any (including if escape was pending - add backslash)
+        if (escapeNext) {
+            current.append('\\')
+        }
+        if (current.isNotEmpty()) {
+            args.add(current.toString())
+        }
+
+        // Need at least 2 arguments (source, dest)
+        return if (args.size >= 2) {
+            args[0] to args[1]
+        } else {
+            null to null
+        }
+    }
+
+    /**
+     * Check if a line from install.txt is a valid adb push command.
+     * Only matches lines that START with "adb push" (case-insensitive).
+     *
+     * @param line The line to check
+     * @return true if this is an adb push command line
+     */
+    fun isAdbPushCommand(line: String): Boolean {
+        return line.trim().startsWith("adb push", ignoreCase = true)
+    }
+
+    /**
+     * Story 1.7 Code Review: Format bytes to human-readable string (e.g., "1.5 GB").
+     * Extracted to eliminate duplication between MainRepository and MainViewModel.
+     *
+     * @param bytes Number of bytes to format
+     * @return Formatted string with appropriate unit (B, KB, MB, GB, TB)
+     */
+    fun formatBytes(bytes: Long): String {
+        return when {
+            bytes < 1024 -> "$bytes B"
+            bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+            bytes < 1024 * 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
+            else -> String.format(java.util.Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
+        }
+    }
+
+    /**
+     * Story 1.7 Code Review Round 9: OBB file comparator for natural/numeric sorting.
+     *
+     * OBB format: main.{versionCode}.{packageName}.obb or patch.{versionCode}.{packageName}.obb
+     * This comparator ensures:
+     * 1. main files come before patch files (alphabetically)
+     * 2. Version codes are sorted numerically (1, 2, 10, 20 not 1, 10, 2, 20)
+     *
+     * Extracted from MainRepository.parseInstallationArtifacts() for testability.
+     */
+    val obbFileComparator: Comparator<String> = compareBy<String> { fileName ->
+        // Sort by prefix (main before patch - 'm' < 'p' alphabetically)
+        fileName.substringBefore(".", "").lowercase()
+    }.thenBy { fileName ->
+        // Extract version code (second part after first dot) and sort numerically
+        val parts = fileName.split(".")
+        if (parts.size >= 2) parts[1].toIntOrNull() ?: 0 else 0
+    }
+
+    /**
+     * Sort a list of OBB file names using natural/numeric sorting.
+     *
+     * @param obbFileNames List of OBB file names to sort
+     * @return Sorted list with main before patch, version codes in numeric order
+     */
+    fun sortObbFiles(obbFileNames: List<String>): List<String> {
+        return obbFileNames.sortedWith(obbFileComparator)
     }
 }
