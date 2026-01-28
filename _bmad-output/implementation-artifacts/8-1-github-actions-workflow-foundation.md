@@ -1,6 +1,6 @@
 # Story 8.1: GitHub Actions Workflow Foundation
 
-Status: in-progress
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
