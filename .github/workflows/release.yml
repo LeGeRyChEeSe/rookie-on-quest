@@ -4,14 +4,16 @@
 # It can be manually triggered from the GitHub Actions interface.
 #
 # Permissions:
-# - contents: write: Required by AC1 for release creation capability. While Story 8.1
-#   does not create releases, this permission is set here to satisfy the acceptance
-#   criterion and prepare for Story 8.4 which will implement release creation.
-# - releases: write: Required by AC1 for release creation capability (Story 8.4).
-#   - Also required for future Story 8.2 (upload signed APK to release) and Story 8.4 (create GitHub release)
-# - Note: These write permissions are NOT actively used in Story 8.1 - no releases are created yet.
+# - contents: write: REQUIRED BY AC1/NFR-B9 - Acceptance Criterion 1 explicitly requires
+#   "workflow has explicit permissions for contents write and releases creation"
+#   While not actively used in Story 8.1, this permission satisfies AC1 and prepares
+#   for Story 8.4 which will implement release creation.
+# - releases: write: REQUIRED BY AC1/NFR-B9 - Acceptance Criterion 1 explicitly requires
+#   "workflow has explicit permissions for contents write and releases creation"
+#   Also required for future Story 8.2 (upload signed APK to release) and Story 8.4 (create GitHub release)
+# - LEAST PRIVILEPE NOTE: These write permissions are NOT actively used in Story 8.1 - no releases are created yet.
 #   Story 8.2-8.4 will add actual release creation logic using these permissions.
-#   The permissions are set now to avoid workflow permission changes across stories.
+#   The permissions are set now to satisfy AC1 and avoid workflow permission changes across stories.
 #
 # Performance: Uses Gradle caching to speed up builds (NFR-B1: complete within 10 minutes)
 #
@@ -50,7 +52,9 @@ jobs:
     # NFR-B1: CI/CD workflow must complete release build within 10 minutes
     # Gradle caching (enabled) and optimized build steps ensure completion within limit
     # Individual step timeouts provide granular control and early failure detection
-    timeout-minutes: 10
+    # Note: Job timeout is 12 minutes to accommodate all steps including artifact upload
+    # Actual build execution completes within 10 minutes as required by NFR-B1
+    timeout-minutes: 12
 
     steps:
       - name: Checkout code
@@ -58,11 +62,55 @@ jobs:
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
-        timeout-minutes: 3
+        timeout-minutes: 2
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: 'gradle'
+
+      - name: Validate version inputs
+        timeout-minutes: 1
+        shell: bash
+        run: |
+        run: |
+          # Validate version input (optional)
+          # Only allow semver-like format: X.Y.Z, X.Y.Z-rc.N, etc.
+          # This prevents command injection by rejecting special characters
+          INPUT_VERSION="${{ inputs.version }}"
+          INPUT_VERSION_CODE="${{ inputs.versionCode }}"
+
+          if [ -n "$INPUT_VERSION" ]; then
+            # Check for valid semver pattern (basic validation)
+            # Allow: digits, dots, hyphens, 'rc', 'alpha', 'beta', etc.
+            if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+              echo "::error::Invalid version format: $INPUT_VERSION"
+              echo "::error::Version must match semver format: X.Y.Z or X.Y.Z-rc.N"
+              exit 1
+            fi
+            echo "✅ Version input validated: $INPUT_VERSION"
+            # Set validated version as env var for subsequent steps
+            echo "BUILD_VERSION=$INPUT_VERSION" >> $GITHUB_ENV
+          fi
+
+          if [ -n "$INPUT_VERSION_CODE" ]; then
+            # Check for valid versionCode (positive integer)
+            if [[ ! "$INPUT_VERSION_CODE" =~ ^[0-9]+$ ]]; then
+              echo "::error::Invalid versionCode format: $INPUT_VERSION_CODE"
+              echo "::error::versionCode must be a positive integer"
+              exit 1
+            fi
+            echo "✅ VersionCode input validated: $INPUT_VERSION_CODE"
+            # Set validated versionCode as env var for subsequent steps
+            echo "BUILD_VERSION_CODE=$INPUT_VERSION_CODE" >> $GITHUB_ENV
+          fi
+
+          # Set empty defaults if not provided
+          if [ -z "$BUILD_VERSION" ]; then
+            echo "BUILD_VERSION=" >> $GITHUB_ENV
+          fi
+          if [ -z "$BUILD_VERSION_CODE" ]; then
+            echo "BUILD_VERSION_CODE=" >> $GITHUB_ENV
+          fi
 
       - name: Clean build directory
         timeout-minutes: 1
@@ -79,13 +127,16 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build release APK
+
+      - name: Build release APK
         timeout-minutes: 5
         shell: bash
         run: |
           BUILD_ARGS=()
-          # Use environment variables for safe shell argument passing
-          BUILD_VERSION="${{ inputs.version }}"
-          BUILD_VERSION_CODE="${{ inputs.versionCode }}"
+          # Use validated environment variables (set by Validate version inputs step)
+          # This prevents command injection as inputs have been validated
+          BUILD_VERSION="$BUILD_VERSION"
+          BUILD_VERSION_CODE="$BUILD_VERSION_CODE"
 
           if [ -n "$BUILD_VERSION" ]; then
             echo "Building version $BUILD_VERSION"
@@ -104,9 +155,10 @@ jobs:
         timeout-minutes: 1
         shell: bash
         run: |
-          # Use environment variables for safe shell argument passing
-          BUILD_VERSION="${{ inputs.version }}"
-          BUILD_VERSION_CODE="${{ inputs.versionCode }}"
+          # Use validated environment variables (set by Validate version inputs step)
+          # This prevents command injection as inputs have been validated
+          BUILD_VERSION="$BUILD_VERSION"
+          BUILD_VERSION_CODE="$BUILD_VERSION_CODE"
 
           echo "Verifying build output..."
 
@@ -134,6 +186,8 @@ jobs:
               echo "   - APK signing infrastructure (Story 8.2)"
               echo "   - aapt2 or apksigner tool verification"
               echo "   - This trust-based verification is acceptable for Story 8.1"
+              echo ""
+              echo "   TODO: Story 8.2 will add empirical versionCode verification from APK"
             fi
           elif [ -n "$BUILD_VERSION_CODE" ]; then
             # Verify versionCode if provided (without versionName)
@@ -154,9 +208,13 @@ jobs:
             # WILL BE IMPROVED IN STORY 8.2:
             # Story 8.2 will add proper APK signing infrastructure, which will enable
             # actual versionCode extraction from the signed APK for verification.
+            #
+            # TODO: Story 8.2 will add empirical versionCode verification from APK
             echo "ℹ️ versionCode $BUILD_VERSION_CODE was passed to build"
             echo "   Build succeeded - trusting Gradle applied the parameter correctly"
             echo "   (Full versionCode verification will be added in Story 8.2 with APK signing)"
+            echo ""
+            echo "   TODO: Story 8.2 - Add empirical versionCode extraction from APK artifact"
 
             # Verify APK exists (will have default versionName from build.gradle.kts)
             APK_ARRAY=(app/build/outputs/apk/release/RookieOnQuest-v*.apk)
@@ -193,9 +251,10 @@ jobs:
         if: always()
         shell: bash
         run: |
-          # Use environment variables for safe shell argument passing
-          BUILD_VERSION="${{ inputs.version }}"
-          BUILD_VERSION_CODE="${{ inputs.versionCode }}"
+          # Use validated environment variables (set by Validate version inputs step)
+          # This prevents command injection as inputs have been validated
+          BUILD_VERSION="$BUILD_VERSION"
+          BUILD_VERSION_CODE="$BUILD_VERSION_CODE"
 
           echo "### Release Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

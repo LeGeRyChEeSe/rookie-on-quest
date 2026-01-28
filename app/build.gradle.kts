@@ -22,9 +22,14 @@ android {
         // versionName can be overridden by Gradle property: -PversionName="2.5.0"
         //
         // Story 8.1: These fallback values enable CI/CD workflow foundation testing
-        // Story 8.3: Version will be centralized via Git tags, eliminating fallbacks
+        // Story 8.3: Version will be centralized via Git tags, eliminating these fallbacks entirely
         //
-        // Current fallbacks (from build.gradle.kts):
+        // TECHNICAL DEBT (Story 8.1):
+        // The fallback values below (9 and "2.5.0") duplicate the defaultConfig values
+        // and exist only to support CI/CD workflow testing in Story 8.1.
+        // Story 8.3 will eliminate this debt by extracting version from Git tags.
+        //
+        // Current fallbacks (temporary, will be removed in Story 8.3):
         versionCode = project.findProperty("versionCode")?.toString()?.toIntOrNull() ?: 9
         versionName = project.findProperty("versionName")?.toString() ?: "2.5.0"
 
@@ -34,10 +39,20 @@ android {
         }
     }
 
+    // ================================================================================
+    // SIGNING CONFIGURATION - Single source of truth for keystore availability
+    // ================================================================================
+    // This consolidates the logic for checking if release signing is available.
+    // Used by both signingConfigs.create("release") and buildTypes.release.signingConfig
+    //
+    // Story 8.1: Local file-based keystore.properties (temporary)
+    // Story 8.2: GitHub Secrets-based signing with secure credential injection
+    val keystorePropertiesFile = rootProject.file("keystore.properties")
+    val hasReleaseKeystore = keystorePropertiesFile.exists()
+
     signingConfigs {
         create("release") {
-            val keystorePropertiesFile = rootProject.file("keystore.properties")
-            if (keystorePropertiesFile.exists()) {
+            if (hasReleaseKeystore) {
                 val properties = Properties()
                 properties.load(FileInputStream(keystorePropertiesFile))
 
@@ -45,6 +60,8 @@ android {
                 storePassword = properties.getProperty("storePassword")
                 keyAlias = properties.getProperty("keyAlias")
                 keyPassword = properties.getProperty("keyPassword")
+
+                logger.lifecycle("Release signing config loaded from keystore.properties")
             } else {
                 // ================================================================================
                 // CRITICAL SECURITY WARNING: No keystore.properties found - release APK will be signed with debug key!
@@ -86,15 +103,50 @@ android {
                 "proguard-rules.pro"
             )
             // SECURITY NOTICE: Signing config selection
-            // - If keystore.properties exists: uses production release signing config
-            // - If keystore.properties missing: falls back to debug signing config (NOT production-ready)
-            // This fallback is ONLY for Story 8.1 CI/CD workflow testing.
-            // Story 8.2 will add GitHub Secrets-based signing to eliminate this fallback entirely.
-            signingConfig = if (rootProject.file("keystore.properties").exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                logger.warn("Falling back to debug signing config for release build (NOT production-ready)")
-                signingConfigs.getByName("debug")
+            // - If keystore.properties exists (hasReleaseKeystore): uses production release signing config
+            // - If keystore.properties missing in CI (GITHUB_ACTIONS=true): FAILS the build
+            // - If keystore.properties missing locally: falls back to debug signing with warning
+            //
+            // This uses the consolidated hasReleaseKeystore variable (defined at signingConfigs level)
+            // to avoid duplicate file existence checks and ensure consistency.
+            //
+            // This prevents silent security failures in CI/CD while allowing local testing.
+            // Story 8.2 will add GitHub Secrets-based signing to eliminate the debug fallback entirely.
+            val isCI = System.getenv("GITHUB_ACTIONS") == "true"
+
+            signingConfig = when {
+                hasReleaseKeystore -> {
+                    logger.lifecycle("Using production release signing config from keystore.properties")
+                    signingConfigs.getByName("release")
+                }
+                isCI -> {
+                    // CRITICAL: Fail the build in CI if no keystore is available
+                    // This prevents silent security failures where release builds are signed with debug key
+                    logger.error("========================================")
+                    logger.error("CRITICAL: CI/CD build without keystore!")
+                    logger.error("========================================")
+                    logger.error("Release builds in CI MUST be signed with production key")
+                    logger.error("Story 8.2 will add GitHub Secrets-based signing")
+                    logger.error("Please configure keystore.properties in GitHub Secrets")
+                    logger.error("========================================")
+                    throw GradleException(
+                        "CI/CD release build requires keystore.properties. " +
+                        "Story 8.2 will add GitHub Secrets-based signing configuration. " +
+                        "For local testing only, you may create keystore.properties locally."
+                    )
+                }
+                else -> {
+                    // Local build without keystore: Allow but warn loudly
+                    logger.warn("========================================")
+                    logger.warn("WARNING: No keystore.properties found")
+                    logger.warn("========================================")
+                    logger.warn("Release APK will be signed with DEBUG key")
+                    logger.warn("This is NOT production-ready!")
+                    logger.warn("Story 8.2 will add GitHub Secrets-based signing")
+                    logger.warn("For local testing only - do NOT distribute this APK")
+                    logger.warn("========================================")
+                    signingConfigs.getByName("debug")
+                }
             }
         }
     }
