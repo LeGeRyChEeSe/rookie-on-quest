@@ -46,16 +46,32 @@ android {
                 keyAlias = properties.getProperty("keyAlias")
                 keyPassword = properties.getProperty("keyPassword")
             } else {
+                // ================================================================================
                 // CRITICAL SECURITY WARNING: No keystore.properties found - release APK will be signed with debug key!
+                // ================================================================================
                 //
+                // ACCEPTABLE FOR STORY 8.1 ONLY:
                 // This fallback is ONLY acceptable for Story 8.1 (CI/CD foundation testing workflow).
                 // Story 8.2 "Secure APK Signing with Keystore Management" will add proper signing config
                 // with GitHub Secrets integration to eliminate this security risk.
                 //
+                // NOT ACCEPTABLE FOR PRODUCTION:
                 // PRODUCTION BUILDS MUST HAVE keystore.properties CONFIGURED!
                 // Debug-signed release APKs are NOT suitable for production distribution.
-                logger.error("CRITICAL: keystore.properties not found - release APK will be signed with DEBUG key (NOT production-ready)")
-                logger.error("Story 8.2 will add GitHub Secrets-based signing to eliminate this risk")
+                //
+                // RISKS OF DEBUG-SIGNED RELEASE BUILDS:
+                // - Cannot be upgraded from in production (signature mismatch)
+                // - Cannot be uploaded to Google Play (signature verification fails)
+                // - Users cannot install over existing production installs
+                // - Security vulnerabilities (debug keys are publicly known)
+                //
+                logger.error("========================================")
+                logger.error("CRITICAL: keystore.properties not found")
+                logger.error("========================================")
+                logger.error("Release APK will be signed with DEBUG key")
+                logger.error("This is NOT production-ready!")
+                logger.error("Story 8.2 will add GitHub Secrets-based signing")
+                logger.error("========================================")
             }
         }
     }
@@ -112,15 +128,31 @@ android {
 // TECHNICAL DEBT: Using internal AGP API (BaseVariantOutputImpl)
 // ================================================================================
 // This workaround is necessary because the public Variant API does not yet
-// support outputFileName configuration. This will be refactored in Story 8.7
-// "Build Dependency Caching and Performance" when we can revisit the build setup.
+// support outputFileName configuration.
+//
+// ACCEPTABLE FOR STORY 8.1:
+// This technical debt is accepted for Story 8.1 (CI/CD workflow foundation).
+// The internal API is stable and widely used, and there is no public alternative yet.
+//
+// WILL BE ADDRESSED IN STORY 8.7:
+// This will be refactored in Story 8.7 "Build Dependency Caching and Performance"
+// when we can revisit the build setup and potentially use the new public API
+// if available, or use a different approach (e.g., Gradle task rename).
 //
 // References:
 // - Issue tracker: https://issuetracker.google.com/issues/159636627
 // - Public API discussion: https://github.com/android/gradle-issues/issues/3714
 //
-// Story 8.1 Note: This technical debt is accepted for workflow foundation.
-// Story 8.7 will address this as part of build optimization work.
+// RISKS:
+// - Internal API may break with AGP upgrades (mitigation: pin AGP version)
+// - Lint warnings about using internal APIs (accepted for Story 8.1)
+//
+// ALTERNATIVES CONSIDERED:
+// 1. Gradle task to rename APK after build (adds complexity, timing issues)
+// 2. Build script with external rename (not idiomatic for Android builds)
+// 3. Wait for public API (blocks Story 8.1 - not acceptable)
+//
+// DECISION: Accept technical debt for Story 8.1, address in Story 8.7
 android.applicationVariants.all {
     outputs
         .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
