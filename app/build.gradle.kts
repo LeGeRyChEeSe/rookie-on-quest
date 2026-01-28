@@ -15,8 +15,14 @@ android {
         applicationId = "com.vrpirates.rookieonquest"
         minSdk = 29
         targetSdk = 34
-        versionCode = 9
-        versionName = "2.5.0"
+        // versionCode can be overridden by Gradle property (e.g., -PversionCode="10")
+        // This is used by GitHub Actions workflow (Story 8.1) for custom version builds
+        // Default fallback "9" will be eliminated in Story 8.3 when version is centralized via Git tags
+        versionCode = project.findProperty("versionCode")?.toString()?.toIntOrNull() ?: 9
+        // versionName can be overridden by Gradle property (e.g., -PversionName="2.5.0")
+        // Default hardcoded version "2.5.0" ensures builds work without parameters.
+        // In Story 8.3, version will be centralized via Git tags, eliminating this redundancy.
+        versionName = project.findProperty("versionName")?.toString() ?: "2.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -30,23 +36,37 @@ android {
             if (keystorePropertiesFile.exists()) {
                 val properties = Properties()
                 properties.load(FileInputStream(keystorePropertiesFile))
-                
+
                 storeFile = file(properties.getProperty("storeFile"))
                 storePassword = properties.getProperty("storePassword")
                 keyAlias = properties.getProperty("keyAlias")
                 keyPassword = properties.getProperty("keyPassword")
+            } else {
+                // CRITICAL WARNING: No keystore.properties found - release APK will be signed with debug key!
+                // This fallback is ONLY acceptable for Story 8.1 (CI/CD foundation testing).
+                // Story 8.2 will add proper signing config with GitHub Secrets integration.
+                // Production builds MUST have keystore.properties configured.
+                logger.warn("keystore.properties not found - release APK will be signed with debug key (NOT production-ready)")
             }
         }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Enable R8/ProGuard minification and obfuscation for release builds
+            // This reduces APK size and improves security by obfuscating code
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            // Only sign with release config if keystore.properties exists
+            // Otherwise, fall back to debug key (Story 8.1 - signing in Story 8.2)
+            signingConfig = if (rootProject.file("keystore.properties").exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
     compileOptions {
@@ -74,13 +94,16 @@ android {
     }
 }
 
-// Renommage de l'APK final
+// APK output filename configuration
+// TECHNICAL DEBT: Using internal AGP API (BaseVariantOutputImpl) - will be refactored in Story 8.7
+// The public Variant API does not yet support outputFileName configuration.
+// See: https://issuetracker.google.com/issues/159636627
 android.applicationVariants.all {
-    outputs.all {
-        if (this is com.android.build.gradle.internal.api.BaseVariantOutputImpl) {
-            outputFileName = "RookieOnQuest-v${versionName}.apk"
+    outputs
+        .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
+        .forEach { output ->
+            output.outputFileName = "RookieOnQuest-v${versionName}.apk"
         }
-    }
 }
 
 dependencies {

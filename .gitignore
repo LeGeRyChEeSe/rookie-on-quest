@@ -67,3 +67,6 @@ node_modules/
 package-lock.json
 
 package.json
+
+# Story worktree tracking
+.story-id
