@@ -2,22 +2,19 @@
 # Story 8.1: Added R8/ProGuard minification support for release builds
 #
 # ================================================================================
-# PROGUARD RULES STRATEGY - SPECIFIC OVER AGGRESSIVE
+# PROGUARD RULES STRATEGY - SURGICAL LIBRARY-PROVIDED RULES
 # ================================================================================
-# These rules are SPECIFIC to each library's public API and reflection usage.
-# We DO NOT use generic "keep everything" rules like `-keep class library.** { *; }`
-# because that would disable R8/ProGuard optimization entirely.
+# This file uses the OFFICIAL ProGuard rules provided by each library's maintainers.
+# These rules are the minimum necessary for each library to function correctly.
 #
-# Instead, each rule block:
-# 1. Targets only the specific classes/methods that need preservation
-# 2. Explains WHY the rule is necessary (reflection, serialization, etc.)
-# 3. References the library's official ProGuard documentation
-# 4. Notes what would break if the rule is removed
+# WHY SURGICAL RULES (not blanket keep):
+# - Smaller APK: R8 can optimize and shrink unused library code
+# - Better performance: Dead code elimination reduces method count
+# - Security: Obfuscation still applies to library internals where safe
 #
-# VALIDATION APPROACH:
-# - These are standard rules from each library's official documentation
-# - Project-specific testing should be done when adding new libraries
-# - When in doubt, test release builds thoroughly before distribution
+# RULE SOURCES:
+# Each section below cites the official source for the rules.
+# When updating library versions, verify rules haven't changed.
 #
 # For more details, see:
 #   http://developer.android.com/guide/developing/tools/proguard.html
@@ -38,118 +35,160 @@
 #-renamesourcefileattribute SourceFile
 
 # ================================================================================
-# Kotlin coroutine rules
+# Kotlin Coroutines
 # ================================================================================
-# NECESSARY: Kotlin coroutines use reflection and need these rules to work correctly
-# with R8/ProGuard obfuscation. Removing these will cause coroutine-related crashes.
-# Source: Kotlin documentation and standard coroutine ProGuard rules.
+# Source: https://github.com/Kotlin/kotlinx.coroutines/blob/master/kotlinx-coroutines-core/jvm/resources/META-INF/proguard/coroutines.pro
+# These rules are bundled with kotlinx-coroutines but included here for clarity.
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
 -keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
--keepclassmembernames class kotlinx.** {
+-keepclassmembers class kotlinx.** {
     volatile <fields>;
 }
 
 # ================================================================================
-# OkHttp rules
+# OkHttp
 # ================================================================================
-# NECESSARY: OkHttp is used by Retrofit for HTTP networking. These rules prevent
-# obfuscation of OkHttp's internal classes which rely on specific naming.
-# Removing these will cause HTTP networking failures.
--dontwarn okhttp3.**
--dontwarn okio.**
--keepnames class okhttp3.internal.publicsuffix.PublicSuffixDatabase
+# Source: https://square.github.io/okhttp/features/r8_proguard/
+# OkHttp's rules are bundled via META-INF, but we include critical ones here.
+-dontwarn okhttp3.internal.platform.**
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**
 
 # ================================================================================
-# Retrofit rules
+# Retrofit
 # ================================================================================
-# NECESSARY: Retrofit is used for API communication with VRP servers. These rules
-# preserve Retrofit's service interfaces and JSON converters. Removing these will
-# cause API deserialization failures.
--dontwarn retrofit2.**
--keep class retrofit2.** { *; }
--keepattributes Signature
--keepattributes Exceptions
+# Source: https://github.com/square/retrofit/blob/master/retrofit/src/main/resources/META-INF/proguard/retrofit2.pro
+# Retrofit uses reflection for service method invocation - these are REQUIRED.
+-keepattributes Signature, InnerClasses, EnclosingMethod
+-keepattributes RuntimeVisibleAnnotations, RuntimeVisibleParameterAnnotations
+-keepattributes AnnotationDefault
+
+-keepclassmembers,allowshrinking,allowobfuscation interface * {
+    @retrofit2.http.* <methods>;
+}
+
+-dontwarn org.codehaus.mojo.animal_sniffer.IgnoreJRERequirement
+-dontwarn javax.annotation.**
+-dontwarn kotlin.Unit
+-dontwarn retrofit2.KotlinExtensions
+-dontwarn retrofit2.KotlinExtensions$*
+
+-if interface * { @retrofit2.http.* <methods>; }
+-keep,allowobfuscation interface <1>
+
+-if interface * { @retrofit2.http.* <methods>; }
+-keep,allowobfuscation interface * extends <1>
+
+-keep,allowobfuscation,allowshrinking class kotlin.coroutines.Continuation
 
 # ================================================================================
-# Gson rules
+# Gson
 # ================================================================================
-# NECESSARY: Gson is used for JSON serialization/deserialization. These rules
-# preserve Gson's type adapters and annotations. Removing these will cause JSON
-# parsing failures for game catalog and metadata.
+# Source: https://github.com/google/gson/blob/main/examples/android-proguard-example/proguard.cfg
+# Gson uses reflection - keep TypeAdapters and annotated classes.
 -keepattributes Signature
 -keepattributes *Annotation*
--dontwarn sun.misc.**
--keep class com.google.gson.** { *; }
+
+# Prevent R8 from removing annotations on Gson @SerializedName fields
+-keep,allowobfuscation,allowshrinking class com.google.gson.reflect.TypeToken
+-keep,allowobfuscation,allowshrinking class * extends com.google.gson.reflect.TypeToken
+
+# Keep type adapters
 -keep class * implements com.google.gson.TypeAdapter
 -keep class * implements com.google.gson.TypeAdapterFactory
 -keep class * implements com.google.gson.JsonSerializer
 -keep class * implements com.google.gson.JsonDeserializer
 
+# Keep @SerializedName annotated fields in data classes used by this app
+-keepclassmembers,allowobfuscation class * {
+    @com.google.gson.annotations.SerializedName <fields>;
+}
+
 # ================================================================================
-# Room database rules
+# Room Database
 # ================================================================================
-# NECESSARY: Room is used for local database (installation queue). These rules
-# preserve Room's generated code and database classes. Removing these will cause
-# database access failures and crashes.
+# Source: https://developer.android.com/jetpack/androidx/releases/room
+# Room's rules are bundled, but we ensure DAOs and entities are kept.
 -keep class * extends androidx.room.RoomDatabase
+-keep @androidx.room.Entity class *
+-keepclassmembers @androidx.room.Entity class * {
+    <fields>;
+}
 -dontwarn androidx.room.paging.**
--keep class androidx.room.paging.** { *; }
 
 # ================================================================================
-# WorkManager rules
+# WorkManager
 # ================================================================================
-# NECESSARY: WorkManager is used for background download tasks. These rules
-# preserve WorkManager's worker classes and scheduling logic. Removing these
-# will cause background task failures.
--dontwarn androidx.work.**
--keep class androidx.work.** { *; }
+# Source: https://developer.android.com/topic/libraries/architecture/workmanager/advanced/custom-configuration
+# Workers are instantiated by class name - keep worker classes.
+-keep class * extends androidx.work.Worker
+-keep class * extends androidx.work.ListenableWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
 
 # ================================================================================
-# Jetpack Compose rules
+# Jetpack Compose
 # ================================================================================
-# NECESSARY: Compose is the UI framework. These rules preserve Compose's
-# runtime and composables. Removing these will cause UI rendering failures.
--keep class androidx.compose.** { *; }
--keep class androidx.compose.ui.** { *; }
--keep class androidx.compose.material.** { *; }
--keep class androidx.compose.material3.** { *; }
--keep class androidx.compose.animation.** { *; }
+# Source: https://developer.android.com/jetpack/compose/tooling#r8-proguard
+# Compose rules are bundled with AGP 8.0+. These are MINIMAL surgical rules.
+# R8 full mode handles most Compose obfuscation automatically.
+#
+# NOTE: Unlike previous versions, we DO NOT use blanket "-keep class ** { *; }"
+# rules for Compose. AGP 8.0+ bundles proper Compose rules via META-INF.
+# Only specific stability and recomposition-related classes need explicit rules.
+
+# Keep Composable functions metadata for proper recomposition
+-keepclasseswithmembers class * {
+    @androidx.compose.runtime.Composable <methods>;
+}
 
 # ================================================================================
-# Coil image loading rules
+# Coil Image Loading
 # ================================================================================
-# NECESSARY: Coil is used for loading game thumbnails and icons. These rules
-# preserve Coil's image loading components. Removing these will cause image
-# loading failures.
--dontwarn coil.**
--keep class coil.** { *; }
+# Source: https://coil-kt.github.io/coil/getting_started/#proguard
+# Coil's rules are bundled via META-INF. These are for extra safety.
+-dontwarn coil.network.**
 
 # ================================================================================
 # Apache Commons Compress (7z support)
 # ================================================================================
-# NECESSARY: Apache Commons Compress is used for extracting 7z game archives.
-# These rules preserve the compression library's classes. Removing these will
-# cause archive extraction failures.
--dontwarn org.apache.commons.**
--keep class org.apache.commons.compress.** { *; }
+# Source: https://commons.apache.org/proper/commons-compress/
+# ServiceLoader requires concrete implementations to be kept.
+-keep class org.apache.commons.compress.compressors.** extends org.apache.commons.compress.compressors.CompressorStreamProvider
+-keep class org.apache.commons.compress.archivers.** extends org.apache.commons.compress.archivers.ArchiveStreamProvider
+-dontwarn org.apache.commons.compress.**
 
 # ================================================================================
-# Keep native methods
+# XZ Utils (used by Commons Compress for LZMA/7z)
 # ================================================================================
-# NECESSARY: JNI native methods must be preserved to allow Java/Kotlin code to
-# call into native libraries.
+-dontwarn org.tukaani.xz.**
+
+# ================================================================================
+# Native Methods
+# ================================================================================
+# JNI methods must be preserved for Java/native interop.
 -keepclasseswithmembernames class * {
     native <methods>;
 }
 
 # ================================================================================
-# Keep serializable classes
+# Serialization Support
 # ================================================================================
-# NECESSARY: Serializable classes may be used for data transfer or caching.
-# These rules preserve serialization metadata.
+# Preserve Java serialization mechanics for classes that use it.
 -keepclassmembers class * implements java.io.Serializable {
     static final long serialVersionUID;
     private static final java.io.ObjectStreamField[] serialPersistentFields;
     private void writeObject(java.io.ObjectOutputStream);
     private void readObject(java.io.ObjectInputStream);
+    java.lang.Object writeReplace();
+    java.lang.Object readResolve();
 }
+
+# ================================================================================
+# Application Data Classes
+# ================================================================================
+# Keep data classes that are serialized/deserialized by Gson.
+# These are specific to Rookie On Quest app.
+-keep class com.vrpirates.rookieonquest.data.** { *; }
+-keep class com.vrpirates.rookieonquest.model.** { *; }

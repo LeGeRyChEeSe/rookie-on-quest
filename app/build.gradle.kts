@@ -16,22 +16,70 @@ android {
         minSdk = 29
         targetSdk = 34
 
-        // Version configuration with GitHub Actions parameter override support
-        // ========================================================================
+        // ================================================================================
+        // VERSION CONFIGURATION - Source of Truth for Default Values
+        // ================================================================================
         // versionCode can be overridden by Gradle property: -PversionCode="10"
         // versionName can be overridden by Gradle property: -PversionName="2.5.0"
         //
         // Story 8.1: These fallback values enable CI/CD workflow foundation testing
         // Story 8.3: Version will be centralized via Git tags, eliminating these fallbacks entirely
         //
-        // TECHNICAL DEBT (Story 8.1):
-        // The fallback values below (9 and "2.5.0") duplicate the defaultConfig values
-        // and exist only to support CI/CD workflow testing in Story 8.1.
-        // Story 8.3 will eliminate this debt by extracting version from Git tags.
+        // DRY PRINCIPLE NOTE:
+        // The values 9 (versionCode) and "2.5.0" (versionName) are the SINGLE SOURCE OF TRUTH.
+        // The GHA workflow (release.yml) extracts these values from this file rather than
+        // hardcoding them, ensuring consistency. The extraction pattern is:
+        //   - versionCode: grep "versionCodeProperty == null -> " to find the default
+        //   - versionName: grep "versionNameProperty == null -> " to find the default
+        //
+        // Story 8.3 will fully centralize version management via Git tags.
+        //
+        // VALIDATION: If a property is provided but invalid, the build FAILS instead of
+        // silently falling back to defaults. This prevents silent version mismatches.
         //
         // Current fallbacks (temporary, will be removed in Story 8.3):
-        versionCode = project.findProperty("versionCode")?.toString()?.toIntOrNull() ?: 9
-        versionName = project.findProperty("versionName")?.toString() ?: "2.5.0"
+        val versionCodeProperty = project.findProperty("versionCode")?.toString()
+        val versionNameProperty = project.findProperty("versionName")?.toString()
+
+        // ================================================================================
+        // VERSION CODE VALIDATION (Local + CI)
+        // ================================================================================
+        // Validation ensures:
+        // 1. versionCode is a valid positive integer (>= 1, Android requirement)
+        // 2. versionCode doesn't exceed Android max (2147483647)
+        // 3. Regression warning if versionCode < current default (CI-only feature in GHA)
+        //
+        // NOTE: This validation mirrors the CI validation in release.yml for consistency.
+        // The only difference is regression warning is CI-only (GHA has access to git history).
+        versionCode = when {
+            versionCodeProperty == null -> 9 // Default when not provided
+            versionCodeProperty.toIntOrNull() == null -> throw GradleException(
+                "Invalid versionCode property: '$versionCodeProperty'. " +
+                "versionCode must be a valid integer >= 1. " +
+                "Example: -PversionCode=10"
+            )
+            versionCodeProperty.toInt() < 1 -> throw GradleException(
+                "Invalid versionCode property: '$versionCodeProperty'. " +
+                "Android requires versionCode to be a positive integer >= 1. " +
+                "See: https://developer.android.com/studio/publish/versioning"
+            )
+            versionCodeProperty.toLong() > 2147483647L -> throw GradleException(
+                "Invalid versionCode property: '$versionCodeProperty'. " +
+                "versionCode exceeds Android maximum (2147483647). " +
+                "See: https://developer.android.com/studio/publish/versioning"
+            )
+            else -> versionCodeProperty.toInt()
+        }
+
+        versionName = when {
+            versionNameProperty == null -> "2.5.0" // Default when not provided
+            versionNameProperty.matches(Regex("^[0-9]+\\.[0-9]+\\.[0-9]+(-[a-zA-Z0-9.]+)?(\\+[a-zA-Z0-9.]+)?$")) -> versionNameProperty
+            else -> throw GradleException(
+                "Invalid versionName property: '$versionNameProperty'. " +
+                "versionName must match semver format: X.Y.Z, X.Y.Z-rc.N, or X.Y.Z+build. " +
+                "Example: -PversionName=2.5.0"
+            )
+        }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -61,34 +109,24 @@ android {
                 keyAlias = properties.getProperty("keyAlias")
                 keyPassword = properties.getProperty("keyPassword")
 
-                logger.lifecycle("Release signing config loaded from keystore.properties")
+                logger.lifecycle("[signing] Release signing config loaded from keystore.properties")
             } else {
                 // ================================================================================
-                // CRITICAL SECURITY WARNING: No keystore.properties found - release APK will be signed with debug key!
+                // SECURITY WARNING: No keystore.properties found
                 // ================================================================================
+                // This block runs when no keystore.properties file exists. The actual build
+                // behavior depends on whether we're in CI or local environment:
+                // - CI (GITHUB_ACTIONS=true): Build will FAIL in buildTypes.release block
+                // - Local: Falls back to debug signing with warning
                 //
-                // ACCEPTABLE FOR STORY 8.1 ONLY:
-                // This fallback is ONLY acceptable for Story 8.1 (CI/CD foundation testing workflow).
-                // Story 8.2 "Secure APK Signing with Keystore Management" will add proper signing config
-                // with GitHub Secrets integration to eliminate this security risk.
-                //
-                // NOT ACCEPTABLE FOR PRODUCTION:
-                // PRODUCTION BUILDS MUST HAVE keystore.properties CONFIGURED!
-                // Debug-signed release APKs are NOT suitable for production distribution.
-                //
-                // RISKS OF DEBUG-SIGNED RELEASE BUILDS:
-                // - Cannot be upgraded from in production (signature mismatch)
-                // - Cannot be uploaded to Google Play (signature verification fails)
-                // - Users cannot install over existing production installs
-                // - Security vulnerabilities (debug keys are publicly known)
-                //
-                logger.error("========================================")
-                logger.error("CRITICAL: keystore.properties not found")
-                logger.error("========================================")
-                logger.error("Release APK will be signed with DEBUG key")
-                logger.error("This is NOT production-ready!")
-                logger.error("Story 8.2 will add GitHub Secrets-based signing")
-                logger.error("========================================")
+                // Story 8.2 will add GitHub Secrets-based signing to eliminate this entirely.
+                logger.warn("[signing] ========================================")
+                logger.warn("[signing] WARNING: keystore.properties not found")
+                logger.warn("[signing] ========================================")
+                logger.warn("[signing] Build behavior will be determined in buildTypes.release")
+                logger.warn("[signing] See buildTypes.release for CI vs local handling")
+                logger.warn("[signing] Story 8.2 will add GitHub Secrets-based signing")
+                logger.warn("[signing] ========================================")
             }
         }
     }
@@ -116,19 +154,19 @@ android {
 
             signingConfig = when {
                 hasReleaseKeystore -> {
-                    logger.lifecycle("Using production release signing config from keystore.properties")
+                    logger.lifecycle("[signing] Using production release signing config from keystore.properties")
                     signingConfigs.getByName("release")
                 }
                 isCI -> {
                     // CRITICAL: Fail the build in CI if no keystore is available
                     // This prevents silent security failures where release builds are signed with debug key
-                    logger.error("========================================")
-                    logger.error("CRITICAL: CI/CD build without keystore!")
-                    logger.error("========================================")
-                    logger.error("Release builds in CI MUST be signed with production key")
-                    logger.error("Story 8.2 will add GitHub Secrets-based signing")
-                    logger.error("Please configure keystore.properties in GitHub Secrets")
-                    logger.error("========================================")
+                    logger.error("[signing] ========================================")
+                    logger.error("[signing] CRITICAL: CI/CD build without keystore!")
+                    logger.error("[signing] ========================================")
+                    logger.error("[signing] Release builds in CI MUST be signed with production key")
+                    logger.error("[signing] Story 8.2 will add GitHub Secrets-based signing")
+                    logger.error("[signing] Please configure keystore.properties in GitHub Secrets")
+                    logger.error("[signing] ========================================")
                     throw GradleException(
                         "CI/CD release build requires keystore.properties. " +
                         "Story 8.2 will add GitHub Secrets-based signing configuration. " +
@@ -137,27 +175,37 @@ android {
                 }
                 else -> {
                     // Local build without keystore: Allow but warn loudly
-                    logger.warn("========================================")
-                    logger.warn("WARNING: No keystore.properties found")
-                    logger.warn("========================================")
-                    logger.warn("Release APK will be signed with DEBUG key")
-                    logger.warn("This is NOT production-ready!")
-                    logger.warn("Story 8.2 will add GitHub Secrets-based signing")
-                    logger.warn("For local testing only - do NOT distribute this APK")
-                    logger.warn("========================================")
+                    logger.warn("[signing] ========================================")
+                    logger.warn("[signing] WARNING: LOCAL BUILD - DEBUG SIGNING")
+                    logger.warn("[signing] ========================================")
+                    logger.warn("[signing] Release APK will be signed with DEBUG key")
+                    logger.warn("[signing] This is NOT production-ready!")
+                    logger.warn("[signing] Story 8.2 will add GitHub Secrets-based signing")
+                    logger.warn("[signing] For local testing only - do NOT distribute this APK")
+                    logger.warn("[signing] ========================================")
                     signingConfigs.getByName("debug")
                 }
             }
         }
     }
+    // Java version configuration
+    // ============================================================
+    // Using Java 11 (LTS) for compatibility with:
+    // - Android SDK 34 (requires Java 11+)
+    // - Jetpack Compose (requires Java 11+)
+    // - Modern Kotlin features
+    //
+    // NOTE: While we use JDK 17 for building (setup-java in GHA), the bytecode
+    // target is Java 11 for broader device compatibility. Java 11 is the minimum
+    // supported for modern Android development with Compose.
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
     }
-    
+
     kotlin {
         compilerOptions {
-            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_1_8)
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
         }
     }
     
@@ -179,32 +227,36 @@ android {
 // ================================================================================
 // TECHNICAL DEBT: Using internal AGP API (BaseVariantOutputImpl)
 // ================================================================================
-// This workaround is necessary because the public Variant API does not yet
-// support outputFileName configuration.
+// STATUS: Accepted for Story 8.1, will be refactored in Story 8.7
 //
-// ACCEPTABLE FOR STORY 8.1:
-// This technical debt is accepted for Story 8.1 (CI/CD workflow foundation).
-// The internal API is stable and widely used, and there is no public alternative yet.
+// WHAT THIS DOES:
+// Renames the APK output from "app-release.apk" to "RookieOnQuest-v{version}.apk"
+// This makes the APK filename consistent and version-identifiable.
+//
+// WHY INTERNAL API IS USED:
+// The Android Gradle Plugin (AGP) public Variant API does not expose outputFileName.
+// The only way to rename APK output is via this internal cast to BaseVariantOutputImpl.
+// This is a WIDELY USED workaround - most Android projects use this exact pattern.
+//
+// RISK ASSESSMENT:
+// - API Stability: LOW RISK - This internal API has been stable since AGP 3.0 (2017)
+// - Build Warnings: YES - Lint warns about internal API usage (acceptable for 8.1)
+// - AGP Upgrade Risk: MEDIUM - Future AGP versions may require adjustment
 //
 // WILL BE ADDRESSED IN STORY 8.7:
-// This will be refactored in Story 8.7 "Build Dependency Caching and Performance"
-// when we can revisit the build setup and potentially use the new public API
-// if available, or use a different approach (e.g., Gradle task rename).
+// Story 8.7 "Build Dependency Caching and Performance" will evaluate:
+// - New AGP Variant API (if outputFileName support is added)
+// - Gradle task-based renaming (registerPostBuildTask)
+// - Custom Gradle plugin approach
 //
 // References:
 // - Issue tracker: https://issuetracker.google.com/issues/159636627
-// - Public API discussion: https://github.com/android/gradle-issues/issues/3714
+// - Community discussion: https://github.com/android/gradle-recipes/issues/3714
 //
-// RISKS:
-// - Internal API may break with AGP upgrades (mitigation: pin AGP version)
-// - Lint warnings about using internal APIs (accepted for Story 8.1)
-//
-// ALTERNATIVES CONSIDERED:
-// 1. Gradle task to rename APK after build (adds complexity, timing issues)
-// 2. Build script with external rename (not idiomatic for Android builds)
-// 3. Wait for public API (blocks Story 8.1 - not acceptable)
-//
-// DECISION: Accept technical debt for Story 8.1, address in Story 8.7
+// ALTERNATIVES CONSIDERED (and why not used in 8.1):
+// 1. Gradle task to rename APK after build → Timing issues with artifact upload
+// 2. Custom Gradle plugin → Over-engineering for Story 8.1 scope
+// 3. Wait for public API → Blocks CI/CD workflow foundation (Story 8.1 goal)
 android.applicationVariants.all {
     outputs
         .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
