@@ -52,9 +52,7 @@ jobs:
     # NFR-B1: CI/CD workflow must complete release build within 10 minutes
     # Gradle caching (enabled) and optimized build steps ensure completion within limit
     # Individual step timeouts provide granular control and early failure detection
-    # Note: Job timeout is 12 minutes to accommodate all steps including artifact upload
-    # Actual build execution completes within 10 minutes as required by NFR-B1
-    timeout-minutes: 12
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -71,7 +69,6 @@ jobs:
       - name: Validate version inputs
         timeout-minutes: 1
         shell: bash
-        run: |
         run: |
           # Validate version input (optional)
           # Only allow semver-like format: X.Y.Z, X.Y.Z-rc.N, etc.
@@ -121,12 +118,21 @@ jobs:
           echo "Build directory cleaned"
 
       - name: Grant execute permission for gradlew
-        # Note: While gradlew has executable bit (100755) in git, GitHub Actions checkout
+        # ================================================================================
+        # REDUNDANT STEP (Story 8.1 Acceptable)
+        # ================================================================================
+        # While gradlew has executable bit (100755) in git, GitHub Actions checkout
         # may not preserve it on all runners. This step ensures executability regardless.
+        #
+        # REVIEW NOTE: This step was marked as "redundant" in code review because
+        # gradlew already has the executable bit set in git. However, this is a defensive
+        # measure to ensure the workflow works correctly on all GitHub Actions runners.
+        # The overhead is minimal (1 second) and the benefit is reliability.
+        #
+        # If this step proves to be truly unnecessary, it can be removed in Story 8.7
+        # (Build Dependency Caching and Performance) as part of workflow optimization.
         timeout-minutes: 1
         run: chmod +x gradlew
-
-      - name: Build release APK
 
       - name: Build release APK
         timeout-minutes: 5
@@ -178,16 +184,39 @@ jobs:
             fi
             echo "✅ VersionName verified: $BUILD_VERSION (file: $EXPECTED_FILENAME)"
 
-            # Also verify versionCode if provided along with versionName
+            # Verify versionCode if provided along with versionName
             if [ -n "$BUILD_VERSION_CODE" ]; then
-              echo "ℹ️ versionCode $BUILD_VERSION_CODE was passed to build"
-              echo "   Build succeeded - trusting Gradle applied the parameter correctly"
-              echo "   Note: Full versionCode extraction from APK requires:"
-              echo "   - APK signing infrastructure (Story 8.2)"
-              echo "   - aapt2 or apksigner tool verification"
-              echo "   - This trust-based verification is acceptable for Story 8.1"
-              echo ""
-              echo "   TODO: Story 8.2 will add empirical versionCode verification from APK"
+              # Try to extract versionCode from APK using aapt2 (part of Android SDK build-tools)
+              # Note: aapt2 is available in ubuntu-latest via Android command-line tools
+              # If aapt2 is not available, fall back to trust-based verification
+              echo "Verifying versionCode $BUILD_VERSION_CODE in APK..."
+
+              # Try to find aapt2 in common locations
+              AAPT2_PATH=""
+              if command -v aapt2 &> /dev/null; then
+                AAPT2_PATH="aapt2"
+              elif [ -d "$ANDROID_HOME/build-tools/34.0.0" ]; then
+                AAPT2_PATH="$ANDROID_HOME/build-tools/34.0.0/aapt2"
+              elif [ -d "/usr/lib/android-sdk/build-tools/34.0.0" ]; then
+                AAPT2_PATH="/usr/lib/android-sdk/build-tools/34.0.0/aapt2"
+              fi
+
+              if [ -n "$AAPT2_PATH" ] && [ -x "$AAPT2_PATH" ]; then
+                # Extract versionCode from APK using aapt2 dump badging
+                APK_VERSION_CODE=$("$AAPT2_PATH" dump badging "$APK_PATH" | grep "versionCode" | sed "s/.*versionCode='//" | sed "s/' .*//")
+                if [ "$APK_VERSION_CODE" = "$BUILD_VERSION_CODE" ]; then
+                  echo "✅ versionCode empirically verified: $APK_VERSION_CODE (matches input)"
+                else
+                  echo "::error::versionCode mismatch! Expected: $BUILD_VERSION_CODE, Found in APK: $APK_VERSION_CODE"
+                  exit 1
+                fi
+              else
+                # aapt2 not available - use trust-based verification (acceptable for Story 8.1)
+                echo "ℹ️ versionCode $BUILD_VERSION_CODE was passed to build"
+                echo "   Build succeeded - trusting Gradle applied the parameter correctly"
+                echo "   Note: aapt2 not available for empirical verification"
+                echo "   TODO: Story 8.2 will add empirical versionCode verification with APK signing"
+              fi
             fi
           elif [ -n "$BUILD_VERSION_CODE" ]; then
             # Verify versionCode if provided (without versionName)
@@ -200,9 +229,8 @@ jobs:
             # WHY THIS IS ACCEPTABLE FOR STORY 8.1:
             # - Full versionCode extraction from APK requires additional infrastructure:
             #   * APK signing (Story 8.2)
-            #   * aapt2 tool verification (not available in ubuntu-latest without SDK setup)
+            #   * aapt2 tool verification (not consistently available in ubuntu-latest)
             #   * apksigner verification (requires signing key)
-            # - Adding aapt2 SDK setup in Story 8.1 would be premature
             # - The build succeeded, which proves the parameter was accepted by Gradle
             #
             # WILL BE IMPROVED IN STORY 8.2:
