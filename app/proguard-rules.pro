@@ -1,18 +1,25 @@
 # ProGuard rules for Rookie On Quest
 # Story 8.1: Added R8/ProGuard minification support for release builds
 #
-# These rules are NECESSARY for the project's dependencies.
-# Each rule block corresponds to a library used in the app.
-# Removing any of these rules may cause runtime crashes or obfuscation issues.
+# ================================================================================
+# PROGUARD RULES STRATEGY - SPECIFIC OVER AGGRESSIVE
+# ================================================================================
+# These rules are SPECIFIC to each library's public API and reflection usage.
+# We DO NOT use generic "keep everything" rules like `-keep class library.** { *; }`
+# because that would disable R8/ProGuard optimization entirely.
 #
-# Validation: These are standard rules from each library's documentation.
-# Project-specific testing should be done when adding new libraries.
+# Instead, each rule block:
+# 1. Targets only the specific classes/methods that need preservation
+# 2. Explains WHY the rule is necessary (reflection, serialization, etc.)
+# 3. References the library's official ProGuard documentation
+# 4. Notes what would break if the rule is removed
 #
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.kts.
+# VALIDATION APPROACH:
+# - These are standard rules from each library's official documentation
+# - Project-specific testing should be done when adding new libraries
+# - When in doubt, test release builds thoroughly before distribution
 #
-# For more details, see
+# For more details, see:
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
 # If your project uses WebView with JS, uncomment the following
