@@ -97,7 +97,7 @@ development_status:
   epic-7-retrospective: optional
 
   epic-8: in-progress
-  8-1: review # Story 8.1: GitHub Actions Workflow Foundation
+  8-1-github-actions-workflow-foundation: review
   8-2-secure-apk-signing-with-keystore-management: backlog
   8-3-version-and-changelog-extraction: backlog
   8-4-release-creation-and-formatting: backlog

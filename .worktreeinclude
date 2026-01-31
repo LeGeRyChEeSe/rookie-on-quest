@@ -22,3 +22,5 @@
 # config.local.json
 
 keystore.properties
+local.properties
+.gradle/
