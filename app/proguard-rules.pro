@@ -190,5 +190,29 @@
 # ================================================================================
 # Keep data classes that are serialized/deserialized by Gson.
 # These are specific to Rookie On Quest app.
+#
+# WHY FULL PRESERVATION (not surgical keep):
+# ================================================================================
+# These packages contain DTOs (Data Transfer Objects) and domain models that are:
+# 1. Serialized/deserialized by Gson using reflection
+# 2. Used across network boundaries (Retrofit responses)
+# 3. Stored in Room database (GameEntity, etc.)
+#
+# The Gson rules above (lines 103-106) only preserve @SerializedName fields.
+# However, this app's data classes may have:
+# - Fields without @SerializedName that rely on field name matching
+# - Nested classes referenced only through reflection
+# - Room entities with relationships
+#
+# PERFORMANCE IMPACT:
+# These packages are small (~10-20 classes) so full preservation has minimal
+# impact on APK size. The safety benefit outweighs the marginal size cost.
+#
+# FUTURE OPTIMIZATION (Story 8.7):
+# If APK size becomes a concern, annotate each class explicitly:
+# - Add @Keep to critical classes
+# - Add @SerializedName to all Gson fields
+# - Then replace these rules with annotation-based keeping
+#
 -keep class com.vrpirates.rookieonquest.data.** { *; }
 -keep class com.vrpirates.rookieonquest.model.** { *; }

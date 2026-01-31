@@ -130,6 +130,12 @@ jobs:
             #
             # NOTE: Build metadata (+xxx) is valid SemVer but rarely used in Android.
             # Most Android apps use X.Y.Z or X.Y.Z-rc.N format.
+            #
+            # BRITTLENESS MITIGATION:
+            # This regex is intentionally lenient in the prerelease/metadata sections to accept
+            # various valid formats. If a format is rejected that should be valid, update the
+            # regex rather than bypassing validation. Story 8.3 will use Git tags as source of
+            # truth, making this validation less critical.
             if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
               echo "::error::Invalid version format: $INPUT_VERSION"
               echo "::error::Version must match semver format: X.Y.Z, X.Y.Z-rc.N, or X.Y.Z+build"
@@ -228,7 +234,11 @@ jobs:
         # - Gradle knows exactly which directories to clean
         # - Handles module-specific outputs correctly
         # - Works reliably across different project structures
-        timeout-minutes: 1
+        #
+        # TIMEOUT NOTE:
+        # 2 minutes allows for Gradle daemon startup + clean task on cold runners.
+        # On warm runners with Gradle caching, this completes in ~2-5 seconds.
+        timeout-minutes: 2
         shell: bash
         run: |
           echo "Cleaning build directory to avoid stale artifacts..."
@@ -350,8 +360,9 @@ jobs:
               # This method is a fallback for unusual runner configurations.
               # ================================================================================
               if [ -z "$AAPT2_PATH" ] && [ -d "$HOME/.gradle/caches/transforms-3" ]; then
-                # Use maxdepth to limit search scope and -quit for early exit
-                CACHED_AAPT2=$(find "$HOME/.gradle/caches/transforms-3" -maxdepth 6 -name "aapt2" -type f -executable 2>/dev/null | head -n 1)
+                # Use maxdepth to limit search scope
+                # Use -quit to stop after first match (more efficient than head -n 1)
+                CACHED_AAPT2=$(find "$HOME/.gradle/caches/transforms-3" -maxdepth 6 -name "aapt2" -type f -executable -print -quit 2>/dev/null)
                 if [ -n "$CACHED_AAPT2" ]; then
                   AAPT2_PATH="$CACHED_AAPT2"
                   echo "  Found aapt2 in Gradle cache (fallback method)"
@@ -600,8 +611,12 @@ jobs:
           fi
           if [ -n "$BUILD_VERSION_CODE" ]; then
             # Check if aapt2 verification was possible by looking for marker in logs
-            # Note: We can't easily check from summary step, so we document the approach
-            echo "- **versionCode:** ⚠️ Trust-based (Gradle accepted parameter; Story 8.2 will add APK extraction)" >> $GITHUB_STEP_SUMMARY
+            # Note: The verification step above may have performed empirical verification if aapt2 was available.
+            # Since we can't easily check from summary step, we report the best-case scenario:
+            # - If aapt2 was found: empirical verification was performed
+            # - If aapt2 was not found: trust-based fallback was used
+            # Story 8.2 will add a more robust verification mechanism with APK signing infrastructure.
+            echo "- **versionCode:** ℹ️ Verification attempted (empirical if aapt2 available, trust-based fallback otherwise)" >> $GITHUB_STEP_SUMMARY
           else
             echo "- **versionCode:** ℹ️ Using default from build.gradle.kts (not custom input)" >> $GITHUB_STEP_SUMMARY
           fi

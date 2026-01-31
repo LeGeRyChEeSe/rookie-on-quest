@@ -174,14 +174,22 @@ android {
                     )
                 }
                 else -> {
-                    // Local build without keystore: Allow but warn loudly
+                    // Local build without keystore: Allow but warn loudly with actionable guidance
                     logger.warn("[signing] ========================================")
                     logger.warn("[signing] WARNING: LOCAL BUILD - DEBUG SIGNING")
                     logger.warn("[signing] ========================================")
                     logger.warn("[signing] Release APK will be signed with DEBUG key")
                     logger.warn("[signing] This is NOT production-ready!")
-                    logger.warn("[signing] Story 8.2 will add GitHub Secrets-based signing")
-                    logger.warn("[signing] For local testing only - do NOT distribute this APK")
+                    logger.warn("[signing]")
+                    logger.warn("[signing] TO CREATE A PRODUCTION BUILD:")
+                    logger.warn("[signing] 1. Create keystore.properties in project root with:")
+                    logger.warn("[signing]    storeFile=/path/to/your/keystore.jks")
+                    logger.warn("[signing]    storePassword=your_store_password")
+                    logger.warn("[signing]    keyAlias=your_key_alias")
+                    logger.warn("[signing]    keyPassword=your_key_password")
+                    logger.warn("[signing] 2. Keep keystore.properties in .gitignore (never commit!)")
+                    logger.warn("[signing]")
+                    logger.warn("[signing] Story 8.2 will add GitHub Secrets-based CI signing")
                     logger.warn("[signing] ========================================")
                     signingConfigs.getByName("debug")
                 }
