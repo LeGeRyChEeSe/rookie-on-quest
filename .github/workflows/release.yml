@@ -185,6 +185,52 @@ jobs:
           # Display notes in logs for verification
           cat release_notes.md
 
+      - name: Setup signing configuration
+        # ================================================================================
+        # SECURE SIGNING SETUP (Story 8.2 Integration)
+        # ================================================================================
+        # This step decodes the base64-encoded keystore from GitHub Secrets and
+        # generates the keystore.properties file required by app/build.gradle.kts.
+        #
+        # SECURITY MEASURES:
+        # 1. Keystore is decoded to a temporary file.
+        # 2. Sensitive values are masked in logs using ::add-mask::.
+        # 3. keystore.properties is created on-the-fly and never committed.
+        # ================================================================================
+        timeout-minutes: 1
+        shell: bash
+        env:
+          KEYSTORE_FILE_BASE64: ${{ secrets.KEYSTORE_FILE }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_FILE_BASE64" ]; then
+            echo "::error::KEYSTORE_FILE secret is missing! APK cannot be signed."
+            exit 1
+          fi
+
+          echo "Setting up signing credentials..."
+          
+          # Decode keystore file
+          echo "$KEYSTORE_FILE_BASE64" | base64 -d > release.keystore
+          
+          # Create keystore.properties (storeFile path is relative to app/build.gradle.kts)
+          # We use absolute path for storeFile to avoid ambiguity
+          cat > keystore.properties << EOF
+          storeFile=$GITHUB_WORKSPACE/release.keystore
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+          # Mask values just in case
+          echo "::add-mask::$KEYSTORE_PASSWORD"
+          echo "::add-mask::$KEY_PASSWORD"
+          
+          echo "✅ Signing configuration generated"
+
+
 
 
       - name: Clean build directory
@@ -606,3 +652,16 @@ jobs:
           else
             echo "❌ Build failed - check logs for details" >> $GITHUB_STEP_SUMMARY
           fi
+
+      - name: Cleanup signing artifacts
+        # ================================================================================
+        # SECURE CLEANUP - Always run to prevent residue exposure
+        # ================================================================================
+        if: always()
+        shell: bash
+        run: |
+          echo "Cleaning up temporary signing artifacts..."
+          rm -f release.keystore
+          rm -f keystore.properties
+          echo "✅ Cleanup complete"
+
