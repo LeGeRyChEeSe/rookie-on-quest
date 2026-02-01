@@ -158,20 +158,20 @@ android {
                     signingConfigs.getByName("release")
                 }
                 isCI -> {
-                    // SECURITY NOTICE: CI/CD build without keystore
-                    // This block runs in CI when no keystore.properties is found.
-                    //
-                    // Story 8.1/8.3: Falls back to debug signing with warning to allow
-                    // workflow foundation and extraction testing.
-                    // Story 8.2: Will add GitHub Secrets-based signing to eliminate this.
-                    logger.warn("[signing] ========================================")
-                    logger.warn("[signing] WARNING: CI/CD BUILD - DEBUG SIGNING")
-                    logger.warn("[signing] ========================================")
-                    logger.warn("[signing] Release builds in CI SHOULD be signed with production key")
-                    logger.warn("[signing] Story 8.2 will add GitHub Secrets-based signing")
-                    logger.warn("[signing] Falling back to DEBUG key for extraction testing")
-                    logger.warn("[signing] ========================================")
-                    signingConfigs.getByName("debug")
+                    // CRITICAL: Fail the build in CI if no keystore is available
+                    // This prevents silent security failures where release builds are signed with debug key
+                    logger.error("[signing] ========================================")
+                    logger.error("[signing] CRITICAL: CI/CD build without keystore!")
+                    logger.error("[signing] ========================================")
+                    logger.error("[signing] Release builds in CI MUST be signed with production key")
+                    logger.error("[signing] Story 8.2 will add GitHub Secrets-based signing")
+                    logger.error("[signing] Please configure keystore.properties in GitHub Secrets")
+                    logger.error("[signing] ========================================")
+                    throw GradleException(
+                        "CI/CD release build requires keystore.properties. " +
+                        "Story 8.2 will add GitHub Secrets-based signing configuration. " +
+                        "For local testing only, you may create keystore.properties locally."
+                    )
                 }
                 else -> {
                     // Local build without keystore: Allow but warn loudly with actionable guidance
