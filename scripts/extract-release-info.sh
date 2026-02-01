@@ -17,12 +17,12 @@ case $MODE in
     version)
         # Extract default versionName from build.gradle.kts
         # Pattern: versionNameProperty == null -> "X.Y.Z"
-        grep "^ *versionNameProperty == null -> " "$BUILD_GRADLE" | sed 's/.*-> \(.*\)\".*/\1/'
+        grep "^ *versionNameProperty == null -> " "$BUILD_GRADLE" | sed 's/.*-> \"\(.*\)\".*/\1/' | tr -d '"' | xargs
         ;;
     version-code)
         # Extract default versionCode from build.gradle.kts
         # Pattern: versionCodeProperty == null -> N
-        grep "^ *versionCodeProperty == null -> " "$BUILD_GRADLE" | sed 's/.*-> \([0-9]*\)..*/\1/'
+        grep "^ *versionCodeProperty == null -> " "$BUILD_GRADLE" | sed 's/.*-> \([0-9]*\).*/\1/' | xargs
         ;;
     changelog)
         if [ -z "$VERSION" ]; then
