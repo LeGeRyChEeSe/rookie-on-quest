@@ -98,7 +98,7 @@ development_status:
 
   epic-8: in-progress
   8-1-github-actions-workflow-foundation: review
-  8-2-secure-apk-signing-with-keystore-management: backlog
+  8-2-secure-apk-signing-with-keystore-management: ready-for-dev
   8-3-version-and-changelog-extraction: backlog
   8-4-release-creation-and-formatting: backlog
   8-5-release-candidate-build-support: backlog

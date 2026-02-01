@@ -1,6 +1,12 @@
-# Force CMD as the shell for Windows compatibility
-SHELL := cmd.exe
-.SHELLFLAGS := /c
+ifeq ($(OS),Windows_NT)
+    # Force CMD as the shell for Windows compatibility
+    SHELL := cmd.exe
+    .SHELLFLAGS := /c
+    INIT_SCRIPT := scripts\init-worktree.bat
+else
+    SHELL := /bin/bash
+    INIT_SCRIPT := ./scripts/init-worktree.sh
+endif
 
 # Variables - Use forward slashes for paths to avoid escape issues
 APP_NAME := RookieOnQuest
@@ -10,6 +16,8 @@ CHANGELOG := CHANGELOG.md
 DIST_DIR := dist
 
 # Version extraction via PowerShell (targeted and robust)
+# Note: Version extraction and other tasks below still rely on PowerShell/Windows commands
+# as the project is primarily developed on Windows.
 VERSION := $(shell powershell -NoProfile -Command "(Get-Content $(BUILD_GRADLE) | Select-String 'versionName = \".*\"' | Select-Object -First 1).Line.Split([char]34)[1]")
 DATE := $(shell powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd'")
 APK_NAME := $(APP_NAME)-v$(VERSION).apk
@@ -18,11 +26,12 @@ APK_PATH := app/build/outputs/apk/release/$(APK_NAME)
 # Git Variables (can be overridden: make commit GIT_MSG="My message")
 GIT_MSG ?= Release v$(VERSION)
 
-.PHONY: help clean build release install commit tag push sync gh-release set-version
+.PHONY: help clean build release install commit tag push sync gh-release set-version init-worktree init
 
 help:
-	@echo RookieOnQuest Makefile (Windows)
+	@echo RookieOnQuest Makefile
 	@echo -----------------------
+	@echo make init STORY=id [AGENT=name] - Initialize a new worktree for a story
 	@echo make set-version V=x.x.x - Update version and changelog
 	@echo make build          - Generate debug APK
 	@echo make release        - Generate release APK
@@ -35,6 +44,18 @@ help:
 	@echo make gh-release     - publish release on GitHub (APK + notes in description)
 	@echo -----------------------
 	@echo make clean          - Clean project
+
+init: init-worktree
+
+init-worktree:
+ifeq ($(OS),Windows_NT)
+	@if "$(STORY)"=="" (echo [ERROR] STORY is required. Example: make init STORY=1-8 AGENT=dev & exit /b 1)
+	@$(INIT_SCRIPT) $(STORY) $(AGENT)
+else
+	@if [ -z "$(STORY)" ]; then echo "[ERROR] STORY is required. Example: make init STORY=1-8 AGENT=dev"; exit 1; fi
+	@chmod +x $(INIT_SCRIPT)
+	@$(INIT_SCRIPT) $(STORY) $(AGENT)
+endif
 
 clean:
 	@if exist $(DIST_DIR) rd /s /q $(DIST_DIR)
