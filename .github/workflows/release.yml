@@ -112,104 +112,81 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_VERSION_CODE: ${{ inputs.versionCode }}
         run: |
-          # Validate version input (optional)
-          # Only allow semver-like format: X.Y.Z, X.Y.Z-rc.N, etc.
-          # This prevents command injection by:
-          # 1. Using env: mapping (above) to isolate inputs from shell expansion
-          # 2. Validating format with regex before use
-          # 3. Setting validated values to GITHUB_ENV for safe use in later steps
+          # Ensure extraction script is executable
+          chmod +x scripts/extract-release-info.sh
 
+          # 1. Extract defaults from build.gradle.kts
+          GRADLE_VERSION=$(./scripts/extract-release-info.sh version)
+          GRADLE_VERSION_CODE=$(./scripts/extract-release-info.sh version-code)
+
+          echo "Project version in build.gradle.kts: $GRADLE_VERSION (code: $GRADLE_VERSION_CODE)"
+
+          # 2. Validate and process Version input
           if [ -n "$INPUT_VERSION" ]; then
-            # Check for valid semver pattern (extended validation)
-            # Full SemVer spec: MAJOR.MINOR.PATCH[-prerelease][+metadata]
-            # Allow: digits, dots, hyphens, 'rc', 'alpha', 'beta', build metadata (+N), etc.
-            # Regex breakdown:
-            #   ^[0-9]+\.[0-9]+\.[0-9]+  - Required: MAJOR.MINOR.PATCH
-            #   (-[a-zA-Z0-9.]+)?        - Optional: prerelease suffix like -rc.1, -alpha
-            #   (\+[a-zA-Z0-9.]+)?$      - Optional: build metadata like +100, +build.456
-            #
-            # NOTE: Build metadata (+xxx) is valid SemVer but rarely used in Android.
-            # Most Android apps use X.Y.Z or X.Y.Z-rc.N format.
-            #
-            # BRITTLENESS MITIGATION:
-            # This regex is intentionally lenient in the prerelease/metadata sections to accept
-            # various valid formats. If a format is rejected that should be valid, update the
-            # regex rather than bypassing validation. Story 8.3 will use Git tags as source of
-            # truth, making this validation less critical.
+            # AC2: Validate that the provided tag/version input matches the versionName in build.gradle.kts
+            # This ensures consistency between GitHub Action trigger and project config.
+            if [ "$INPUT_VERSION" != "$GRADLE_VERSION" ]; then
+              echo "::error::Version mismatch! Input: $INPUT_VERSION, build.gradle.kts: $GRADLE_VERSION"
+              echo "::error::The provided version MUST match the versionName in app/build.gradle.kts"
+              exit 1
+            fi
+
+            # Basic semver validation (prevent command injection)
             if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
               echo "::error::Invalid version format: $INPUT_VERSION"
-              echo "::error::Version must match semver format: X.Y.Z, X.Y.Z-rc.N, or X.Y.Z+build"
-              echo "::error::Examples: 2.5.0, 2.5.0-rc.1, 2.5.0-alpha.2, 2.5.0+100"
               exit 1
             fi
-            # Warn if using build metadata (non-standard for Android)
-            if [[ "$INPUT_VERSION" =~ \+ ]]; then
-              echo "::warning::Version contains build metadata (+xxx). This is valid SemVer but unusual for Android."
-            fi
-            echo "✅ Version input validated: $INPUT_VERSION"
-            # Set validated version as env var for subsequent steps
+            
             echo "BUILD_VERSION=$INPUT_VERSION" >> $GITHUB_ENV
+            echo "✅ Version validated and matches build.gradle.kts: $INPUT_VERSION"
+          else
+            # Default to version from build.gradle.kts
+            echo "BUILD_VERSION=$GRADLE_VERSION" >> $GITHUB_ENV
+            echo "ℹ️ No version provided, using default: $GRADLE_VERSION"
           fi
 
+          # 3. Validate and process VersionCode input
           if [ -n "$INPUT_VERSION_CODE" ]; then
-            # Check for valid versionCode (positive integer >= 1)
-            # Android requires versionCode to be a POSITIVE integer (>= 1)
-            # See: https://developer.android.com/studio/publish/versioning#versioningsettings
+            # Basic integer validation
             if [[ ! "$INPUT_VERSION_CODE" =~ ^[1-9][0-9]*$ ]]; then
               echo "::error::Invalid versionCode format: $INPUT_VERSION_CODE"
-              echo "::error::versionCode must be a positive integer >= 1 (Android requirement)"
-              echo "::error::Examples: 1, 10, 100, 2147483647"
               exit 1
             fi
-            # Check for integer overflow (max for Android versionCode is 2147483647)
-            if [ "$INPUT_VERSION_CODE" -gt 2147483647 ]; then
-              echo "::error::versionCode exceeds maximum value (2147483647)"
-              echo "::error::Provided value: $INPUT_VERSION_CODE"
-              exit 1
+
+            # Check for regression
+            if [ "$INPUT_VERSION_CODE" -lt "$GRADLE_VERSION_CODE" ]; then
+              echo "::warning::Version code regression detected! ($INPUT_VERSION_CODE < $GRADLE_VERSION_CODE)"
             fi
-            # ================================================================================
-            # VERSION CODE REGRESSION CHECK - Extracts default from build.gradle.kts
-            # ================================================================================
-            # This ensures GHA uses the SAME default as local builds (DRY principle).
-            # build.gradle.kts is the SINGLE SOURCE OF TRUTH for default versionCode.
-            #
-            # PATTERN EXPLANATION:
-            # We look for "versionCodeProperty == null -> N" which is the Kotlin when clause
-            # that sets the default versionCode. This pattern is stable because it's part of
-            # the version configuration structure documented in build.gradle.kts.
-            #
-            # FALLBACK STRATEGY:
-            # If extraction fails (e.g., file format changed), we warn and use 9 as fallback.
-            # This prevents build failures while alerting the user to sync issues.
-            #
-            # Story 8.3 will eliminate this extraction by using Git tags as the single source.
-            CURRENT_VERSION_CODE=$(grep -oP '(?<=versionCodeProperty == null -> )[0-9]+' app/build.gradle.kts 2>/dev/null || echo "")
-            if [ -z "$CURRENT_VERSION_CODE" ] || [[ ! "$CURRENT_VERSION_CODE" =~ ^[0-9]+$ ]]; then
-              # Fallback if grep fails - should not happen with correct build.gradle.kts
-              # If this warning appears, the build.gradle.kts format may have changed
-              CURRENT_VERSION_CODE=9
-              echo "::warning::Could not extract current versionCode from build.gradle.kts"
-              echo "::warning::Expected pattern: 'versionCodeProperty == null -> N'"
-              echo "::warning::Using fallback value: 9"
-            fi
-            if [ "$INPUT_VERSION_CODE" -lt "$CURRENT_VERSION_CODE" ]; then
-              echo "::warning::Version code regression detected!"
-              echo "::warning::Provided versionCode ($INPUT_VERSION_CODE) is lower than current project version ($CURRENT_VERSION_CODE)"
-              echo "::warning::This may cause upgrade issues on devices with the newer version installed"
-              echo "::warning::Continuing build (this may be intentional for testing)"
-            fi
-            echo "✅ VersionCode input validated: $INPUT_VERSION_CODE"
-            # Set validated versionCode as env var for subsequent steps
+
             echo "BUILD_VERSION_CODE=$INPUT_VERSION_CODE" >> $GITHUB_ENV
+            echo "✅ VersionCode validated: $INPUT_VERSION_CODE"
+          else
+            # Default to versionCode from build.gradle.kts
+            echo "BUILD_VERSION_CODE=$GRADLE_VERSION_CODE" >> $GITHUB_ENV
+            echo "ℹ️ No versionCode provided, using default: $GRADLE_VERSION_CODE"
           fi
 
-          # Set empty defaults if not provided
-          if [ -z "$BUILD_VERSION" ]; then
-            echo "BUILD_VERSION=" >> $GITHUB_ENV
+      - name: Extract Release Notes
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          VERSION="${{ env.BUILD_VERSION }}"
+          echo "Extracting release notes for version $VERSION..."
+          
+          # Use script to extract changelog section
+          ./scripts/extract-release-info.sh changelog "$VERSION" > release_notes.md
+          
+          # AC7/8: Validate that a non-empty changelog entry exists
+          if [ ! -s release_notes.md ] || ! grep -q "[^[:space:]]" release_notes.md; then
+            echo "::error::Changelog entry for version $VERSION is missing or empty in CHANGELOG.md"
+            exit 1
           fi
-          if [ -z "$BUILD_VERSION_CODE" ]; then
-            echo "BUILD_VERSION_CODE=" >> $GITHUB_ENV
-          fi
+          
+          echo "✅ Release notes extracted successfully"
+          # Display notes in logs for verification
+          cat release_notes.md
+
+
 
       - name: Clean build directory
         # ================================================================================
