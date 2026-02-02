@@ -19,8 +19,7 @@ case $MODE in
     version)
         # Extract default versionName from build.gradle.kts
         # Pattern matches the 'versionNameProperty == null -> "X.Y.Z"' line
-        # Handles optional spaces and semver strings
-        VAL=$(sed -n 's/.*versionNameProperty[[:space:]]*==[[:space:]]*null[[:space:]]*->[[:space:]]*"\([^"]*\)".*/\1/p' "$BUILD_GRADLE" | head -n 1 | xargs)
+        VAL=$(grep "versionNameProperty == null ->" "$BUILD_GRADLE" | head -n 1 | cut -d'"' -f2)
         if [ -z "$VAL" ]; then
             echo "Error: Could not extract versionName from $BUILD_GRADLE" >&2
             exit 1
@@ -30,8 +29,7 @@ case $MODE in
     version-code)
         # Extract default versionCode from build.gradle.kts
         # Pattern matches the 'versionCodeProperty == null -> N' line
-        # Handles underscores in numbers (valid Kotlin syntax)
-        VAL=$(sed -n 's/.*versionCodeProperty[[:space:]]*==[[:space:]]*null[[:space:]]*->[[:space:]]*\([0-9_]*\).*/\1/p' "$BUILD_GRADLE" | head -n 1 | sed 's/_//g' | xargs)
+        VAL=$(grep "versionCodeProperty == null ->" "$BUILD_GRADLE" | head -n 1 | awk -F'->' '{print $2}' | awk '{print $1}' | sed 's/_//g')
         if [ -z "$VAL" ]; then
             echo "Error: Could not extract versionCode from $BUILD_GRADLE" >&2
             exit 1
