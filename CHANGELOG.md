@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-02-01
+
+### ✨ New Features
+- **Automated Release Workflow:** Integrated version extraction and changelog discovery for automated GitHub releases.
+- **Fail-Fast Validation:** Added validation to ensure tag/version inputs match project configuration.
+
 ### 🔧 Technical Notes
 - **AGP 9.0.0 Upgrade Rejected:** Android Studio recommended upgrading to Android Gradle Plugin 9.0.0, but this caused build failures due to Room 2.6.1 incompatibility with Kotlin 2.2.x (kotlinx-metadata-jvm version mismatch). Reverted to AGP 8.13.2 + Kotlin 1.9.22. Future upgrade will require migrating Room to 2.8.x with KSP.
 
