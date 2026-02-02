@@ -2,8 +2,6 @@
 
 Status: done
 
-<!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
-
 ## Story
 
 As a developer,
@@ -42,6 +40,7 @@ so that releases are populated with correct version info and formatted release n
 - [x] Implement Automated Extraction Tests (AC: Review Improvement)
   - [x] Create `scripts/test-extraction.sh` to verify script logic
   - [x] Ensure CI/CD compatibility and robustness
+- [x] **Verified on GitHub Actions**: Successful extraction and build (Run ID: 21599192933)
 
 ## Review Follow-ups (AI)
 
