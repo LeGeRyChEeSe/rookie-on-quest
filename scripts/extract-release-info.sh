@@ -19,7 +19,8 @@ case $MODE in
     version)
         # Extract default versionName from build.gradle.kts
         # Pattern matches the 'versionNameProperty == null -> "X.Y.Z"' line
-        VAL=$(grep "versionNameProperty == null ->" "$BUILD_GRADLE" | head -n 1 | sed 's/[^"]*"//;s/".*//')
+        # Anchored to start of line to avoid matching documentation comments
+        VAL=$(grep "^[[:space:]]*versionNameProperty == null ->" "$BUILD_GRADLE" | head -n 1 | sed 's/[^"]*"//;s/".*//')
         if [ -z "$VAL" ]; then
             echo "Error: Could not extract versionName from $BUILD_GRADLE" >&2
             exit 1
@@ -29,8 +30,8 @@ case $MODE in
     version-code)
         # Extract default versionCode from build.gradle.kts
         # Pattern matches the 'versionCodeProperty == null -> N' line
-        # We strip everything before ->, then everything from // onwards, then remove non-digits
-        VAL=$(grep "versionCodeProperty == null ->" "$BUILD_GRADLE" | head -n 1 | sed 's/.*->//;s/\/\/.*//;s/[^0-9]//g')
+        # Anchored to start of line to avoid matching documentation comments
+        VAL=$(grep "^[[:space:]]*versionCodeProperty == null ->" "$BUILD_GRADLE" | head -n 1 | sed 's/.*->//;s/\/\/.*//;s/[^0-9]//g')
         if [ -z "$VAL" ]; then
             echo "Error: Could not extract versionCode from $BUILD_GRADLE" >&2
             exit 1
