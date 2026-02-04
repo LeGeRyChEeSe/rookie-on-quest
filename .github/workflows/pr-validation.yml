@@ -141,11 +141,14 @@ jobs:
         # AC6 requires feedback within 2 minutes of build completion.
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
+        env:
+          UNIT_TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          INSTR_TESTS_OUTCOME: ${{ steps.instrumented_tests.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
         with:
           script: |
-            const { LINT_ERRORS, LINT_WARNINGS, LINT_STATUS, BUILD_DURATION_SECONDS, BUILD_TARGET_SECONDS } = process.env;
+            const { LINT_ERRORS, LINT_WARNINGS, LINT_STATUS, BUILD_DURATION_SECONDS, BUILD_TARGET_SECONDS, UNIT_TESTS_OUTCOME, INSTR_TESTS_OUTCOME, BUILD_OUTCOME } = process.env;
             const jobStatus = "${{ job.status }}";
-            const lintStatus = LINT_STATUS;
             const duration = parseInt(BUILD_DURATION_SECONDS || 0);
             const target = parseInt(BUILD_TARGET_SECONDS || 300);
             const minutes = Math.floor(duration / 60);
@@ -156,6 +159,12 @@ jobs:
             const icon = jobStatus === 'success' ? '✅' : '❌';
             const statusText = jobStatus === 'success' ? 'All checks passed!' : 'Validation failed.';
             
+            const getStatusIcon = (outcome) => {
+              if (outcome === 'success') return '✅ Pass';
+              if (outcome === 'skipped') return '⚪ Skipped';
+              return '❌ Fail';
+            };
+
             const body = `### PR Validation Summary ${icon}
             
             **Status:** ${statusText}
@@ -163,13 +172,13 @@ jobs:
             
             | Check | Status | Details |
             |-------|--------|---------|
-            | **Lint** | ${lintStatus} | ${LINT_ERRORS} Errors, ${LINT_WARNINGS} Warnings |
-            | **Unit Tests** | \${{ steps.tests.outcome == 'success' ? '✅ Pass' : (steps.tests.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | JUnit Reports |
-            | **Instr. Tests** | \${{ steps.instrumented_tests.outcome == 'success' ? '✅ Pass' : (steps.instrumented_tests.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | Android Emulator |
-            | **Build** | \${{ steps.build.outcome == 'success' ? '✅ Pass' : (steps.build.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | assembleDebug |
+            | **Lint** | ${LINT_STATUS} | ${LINT_ERRORS} Errors, ${LINT_WARNINGS} Warnings |
+            | **Unit Tests** | ${getStatusIcon(UNIT_TESTS_OUTCOME)} | JUnit Reports |
+            | **Instr. Tests** | ${getStatusIcon(INSTR_TESTS_OUTCOME)} | Android Emulator |
+            | **Build** | ${getStatusIcon(BUILD_OUTCOME)} | assembleDebug |
             
             ---
-            *Reports and artifacts (including Lint HTML) are available in the [Artifacts Tab](https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}#artifacts) of the [Action Run Summary](https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }})*`;
+            *Reports and artifacts (including Lint HTML) are available in the [Artifacts Tab](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}#artifacts) of the [Action Run Summary](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})*`;
             
             // Find existing comment to update or create new one
             const { data: comments } = await github.rest.issues.listComments({
@@ -200,6 +209,6 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo "### PR Validation: \${{ job.status == 'success' && '✅ PASS' || '❌ FAIL' }}" >> $GITHUB_STEP_SUMMARY
+          echo "### PR Validation: ${{ job.status == 'success' && '✅ PASS' || '❌ FAIL' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "[View Full PR Feedback and Artifacts](https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "[View Full PR Feedback and Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
