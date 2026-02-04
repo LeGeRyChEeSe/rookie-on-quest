@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0-rc.1] - 2026-02-04
+
+### ✨ New Features
+- **Release Candidate Support:** Added support for pre-release versioning and automated RC release creation.
+
 ## [2.5.0] - 2026-02-01
 
 ### ✨ New Features
