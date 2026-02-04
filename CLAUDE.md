@@ -193,7 +193,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ## Testing
 
-Currently, no test infrastructure exists. When adding tests:
+The project uses JUnit for unit tests and AndroidX Test for instrumented tests.
 - Place unit tests in `app/src/test/`
 - Place instrumented tests in `app/src/androidTest/`
 - Use `./gradlew test` for unit tests
