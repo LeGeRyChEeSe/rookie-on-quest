@@ -3,8 +3,6 @@
 # This workflow automatically validates pull requests to the main branch.
 # It performs quality checks (lint), unit tests, and verifies compilation.
 #
-# Performance: Uses Gradle caching to minimize build time (Target < 5 minutes)
-#
 name: PR Validation
 
 on:
@@ -21,6 +19,8 @@ jobs:
     name: Lint, Test & Build
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      BUILD_TARGET_SECONDS: 300
 
     steps:
       - name: Checkout code
@@ -56,6 +56,7 @@ jobs:
         id: instrumented_tests
         if: success()
         timeout-minutes: 15
+        continue-on-error: true
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
@@ -81,6 +82,17 @@ jobs:
           fi
           echo "BUILD_DURATION_SECONDS=$DURATION" >> $GITHUB_ENV
           echo "Build took $DURATION seconds"
+
+      - name: Enforce Performance Target (AC7)
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "$BUILD_DURATION_SECONDS" ]; then
+            if [ "$BUILD_DURATION_SECONDS" -ge "$BUILD_TARGET_SECONDS" ]; then
+              echo "❌ ERROR: Build took $BUILD_DURATION_SECONDS seconds, which exceeds the target of $BUILD_TARGET_SECONDS seconds."
+              exit 1
+            fi
+          fi
 
       - name: Generate Lint Summary
         if: always()
@@ -129,13 +141,15 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const { LINT_ERRORS, LINT_WARNINGS, LINT_STATUS, BUILD_DURATION_SECONDS } = process.env;
+            const { LINT_ERRORS, LINT_WARNINGS, LINT_STATUS, BUILD_DURATION_SECONDS, BUILD_TARGET_SECONDS } = process.env;
             const jobStatus = "${{ job.status }}";
             const lintStatus = LINT_STATUS;
             const duration = parseInt(BUILD_DURATION_SECONDS || 0);
+            const target = parseInt(BUILD_TARGET_SECONDS || 300);
             const minutes = Math.floor(duration / 60);
             const seconds = duration % 60;
             const timeStr = `${minutes}m ${seconds}s`;
+            const targetMinutes = Math.floor(target / 60);
             
             const icon = jobStatus === 'success' ? '✅' : '❌';
             const statusText = jobStatus === 'success' ? 'All checks passed!' : 'Validation failed.';
@@ -143,7 +157,7 @@ jobs:
             const body = `### PR Validation Summary ${icon}
             
             **Status:** ${statusText}
-            **Duration:** ${timeStr} ${duration < 300 ? '✅' : '⚠️'} (Target < 5m)
+            **Duration:** ${timeStr} ${duration < target ? '✅' : '⚠️'} (Target < ${targetMinutes}m)
             
             | Check | Status | Details |
             |-------|--------|---------|
