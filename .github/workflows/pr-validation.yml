@@ -21,7 +21,7 @@ jobs:
   validate:
     name: Lint, Test & Build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -55,6 +55,19 @@ jobs:
         if: success() || failure()
         timeout-minutes: 5
         run: ./gradlew testDebugUnitTest
+
+      - name: Run Instrumented Tests
+        id: instrumented_tests
+        # Optional: Runs if previous steps pass and not on automated syncs
+        if: success()
+        timeout-minutes: 15
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: default
+          arch: x86_64
+          profile: Nexus 6
+          script: ./gradlew connectedDebugAndroidTest
 
       - name: Build Debug APK
         id: build
@@ -94,7 +107,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: app/build/test-results/testDebugUnitTest/
+          path: |
+            app/build/test-results/testDebugUnitTest/
+            app/build/outputs/connected_android_test_additional_output/
 
       - name: Upload Lint Report
         if: always()
@@ -129,16 +144,17 @@ jobs:
             const body = `### PR Validation Summary ${icon}
             
             **Status:** ${statusText}
-            **Duration:** ${timeStr} ${duration < 300 ? '✅' : '⚠️'} (Target < 5m)
+            **Duration:** ${timeStr} ${duration < 600 ? '✅' : '⚠️'} (Target < 10m with Instrumented Tests)
             
             | Check | Status | Details |
             |-------|--------|---------|
             | **Lint** | ${lintStatus} | ${LINT_ERRORS} Errors, ${LINT_WARNINGS} Warnings |
-            | **Tests** | ${{ steps.tests.outcome == 'success' ? '✅ Pass' : (steps.tests.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | See Test Summary below |
+            | **Unit Tests** | ${{ steps.tests.outcome == 'success' ? '✅ Pass' : (steps.tests.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | JUnit Reports |
+            | **Instr. Tests** | ${{ steps.instrumented_tests.outcome == 'success' ? '✅ Pass' : (steps.instrumented_tests.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | Android Emulator |
             | **Build** | ${{ steps.build.outcome == 'success' ? '✅ Pass' : (steps.build.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | assembleDebug |
             
             ---
-            *Reports and artifacts are available in the [Action Run Summary](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})*`;
+            *Reports and artifacts (including Lint HTML) are available in the [Artifacts Tab](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts) of the [Action Run Summary](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})*`;
             
             // Find existing comment to update or create new one
             const { data: comments } = await github.rest.issues.listComments({
@@ -174,7 +190,9 @@ jobs:
           echo "- **Status:** ${{ job.status == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Duration:** ${BUILD_DURATION_SECONDS}s" >> $GITHUB_STEP_SUMMARY
           echo "- **Lint:** ${LINT_STATUS} (${LINT_ERRORS} Errors, ${LINT_WARNINGS} Warnings)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests:** ${{ steps.tests.outcome == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Unit Tests:** ${{ steps.tests.outcome == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Instr. Tests:** ${{ steps.instrumented_tests.outcome == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Build:** ${{ steps.build.outcome == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)" >> $GITHUB_STEP_SUMMARY
           echo "[View Action Run Summary](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY

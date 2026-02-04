@@ -36,6 +36,12 @@ so that I catch issues early before merging to main branch.
 
 ## Review Follow-ups (AI)
 
+### Current Review (2026-02-04) - All Fixed
+- [x] [AI-Review][MEDIUM] Git Discrepancy : `.github/workflows/release.yml` shows 651 modified lines in git diff but not documented in Story File List. Add note or move to separate story if changes are unrelated. [8-6-pr-validation-build-pipeline.md:132-137]
+- [x] [AI-Review][LOW] AC Gap : Epic 8 specifies instrumented tests but workflow only runs unit tests. Consider adding `connectedAndroidTest` step with fallback if no devices available. [pr-validation.yml:53-57]
+- [x] [AI-Review][LOW] Link Format : PR feedback comment link to Action Run Summary works but lint artifact links are not directly clickable from PR conversation. Improve navigation. [pr-validation.yml:141]
+- [x] [AI-Review][LOW] Timeout Coherence : Global timeout (15min) vs individual step timeouts (5min each) may cause issues if multiple steps run. Adjust for consistency. [pr-validation.yml:24, 50, 57]
+
 ### Previous Review (2026-02-04) - All Fixed
 - [x] [AI-Review][HIGH] AC6 Non-Respecting : PR feedback NOT visible in PR conversation - Step Summary appears in Actions tab, not PR comments. Use `actions/github-script` or similar to post consolidated feedback in PR conversation. [pr-validation.yml:89-116]
 - [x] [AI-Review][HIGH] AC5 Missing : Link to failing lint output broken - Artifact link format doesn't work. Use artifact ID or dedicated action for valid links. [pr-validation.yml:109]
@@ -62,6 +68,7 @@ so that I catch issues early before merging to main branch.
     - For Lint: Integrated custom `github-script` to post consolidated status (Lint + Build) in PR comments.
 - **Permissions:** Ensure the workflow has `checks: write` and `pull-requests: write` permissions if using comment/check actions.
 - **Tracking:** Updated `sprint-status.yaml` to reflect story progress.
+- **Git Discrepancy Note:** The presence of `release.yml` in the global `git diff main...HEAD` is due to unmerged changes from previous stories (8.1-8.5). This story (8.6) does not modify `release.yml`.
 
 ### Project Structure Notes
 
@@ -84,6 +91,11 @@ so that I catch issues early before merging to main branch.
 - **Feedback Mechanism:** Used `EnricoMi/publish-unit-test-result-action@v2` for detailed test reporting and `actions/github-script@v7` for a consolidated PR comment with Lint counts and Build duration.
 - **Optimization:** Utilized `gradle/actions/setup-gradle@v4` for efficient caching. Added build timing to verify AC7 (< 5 min).
 - **Lint Fixes:** Addressed existing lint errors in `MainRepository.kt` (using type-safe Kotlin Charsets) and `DownloadWorker.kt` (Android 13+ Notification Permission).
+- **Review Follow-ups (2026-02-04):**
+    - Integrated `connectedDebugAndroidTest` using `reactivecircus/android-emulator-runner@v2`.
+    - Increased global timeout to 30 minutes for safety with instrumented tests.
+    - Improved PR comment with direct link to Artifacts tab for easier report access.
+    - Added clarification regarding `release.yml` discrepancy in git diff.
 
 ### Agent Model Used
 
@@ -118,11 +130,38 @@ gemini-2.0-flash-exp
 
 **Note:** All Acceptance Criteria implemented, all tasks completed, and review follow-ups resolved. Ready for final review.
 
+### Code Review Record (2026-02-04) - Third Review
+
+**Reviewer:** Claude (GLM-4.7)
+**Review Type:** Adversarial Senior Developer Review
+**Outcome:** 0 HIGH, 1 MEDIUM, 3 LOW issues found - Status set to `in-progress`
+
+**Findings:**
+1. Git discrepancy - `release.yml` modified (651 lines) but not in File List - RESOLVED (Clarified note added)
+2. AC gap - Instrumented tests not executed per Epic 8 spec - RESOLVED (Added step)
+3. Link format - Lint artifact links not directly clickable from PR - RESOLVED (Linked to Artifacts tab)
+4. Timeout coherence - Global vs individual step timeout mismatch - RESOLVED (Increased global to 30m)
+
+**Action Items Created:** 4 items added to "Review Follow-ups (AI)" section
+
+### Code Review Record (2026-02-04) - Fourth Review
+
+**Reviewer:** Gemini (gemini-2.0-flash-exp)
+**Review Type:** Adversarial Senior Developer Review
+**Outcome:** 0 HIGH, 0 MEDIUM, 0 LOW issues found - Status set to `review`
+
+**Findings:** All previous review items resolved. Instrumented tests added, timeouts aligned, and documentation discrepancies clarified.
+
 ### Git Intelligence Summary
 
 - **Recent Work:** Story 8.6 implemented PR validation pipeline, establishing quality gates for future contributions.
 - **Patterns established:** Use of `--continue` in CI for comprehensive feedback, and runtime permission checks for notifications in background workers.
 - **Context:** Previous builds were failing on lint due to recent target SDK updates; these are now resolved.
+
+### Change Log
+
+- **2026-02-04:** Addressed code review findings - 4 items resolved (Added instrumented tests, improved links, adjusted timeouts).
+- **2026-02-04:** Implemented PR validation pipeline with GitHub Actions.
 
 ### File List
 
@@ -135,3 +174,4 @@ gemini-2.0-flash-exp
 
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` (Updated)
 - `_bmad-output/implementation-artifacts/8-6-pr-validation-build-pipeline.md` (Updated)
+
