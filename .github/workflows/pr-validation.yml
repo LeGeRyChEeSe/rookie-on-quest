@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  checks: write # Required for publishing test results.
   pull-requests: write # Required for posting/updating PR feedback comments. Token scope is limited to current repository.
 
 jobs:
@@ -136,6 +135,7 @@ jobs:
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
           files: "app/build/test-results/**/*.xml"
+          check_run: false # Avoid 403 Forbidden errors, Job Summary is enough.
 
       - name: PR Feedback Comment
         # AC5 & AC6: Display build status in PR conversation.
