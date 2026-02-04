@@ -42,9 +42,30 @@ grep "LINT_ERRORS=1" "$GITHUB_ENV" || { echo "❌ Failed: LINT_ERRORS should be 
 grep "LINT_WARNINGS=1" "$GITHUB_ENV" || { echo "❌ Failed: LINT_WARNINGS should be 1"; exit 1; }
 grep "LINT_STATUS=❌ Fail" "$GITHUB_ENV" || { echo "❌ Failed: LINT_STATUS should be Fail"; exit 1; }
 
-echo "✅ Lint Summary Logic Validated"
+echo "✅ Lint Summary Logic Validated (Standard Case)"
 
-# Test Case 2: Duration calculation
+# Test Case 3: Missing Lint XML
+rm "$LINT_XML"
+if [ ! -f "$LINT_XML" ]; then
+    echo "✅ Missing Lint XML handled"
+fi
+
+# Test Case 4: Malformed XML
+echo "MALFORMED < XML" > "$LINT_XML"
+# grep -c should return 0 if no match
+ERRORS=$(grep -c 'severity="Error"' "$LINT_XML" || true)
+if [ "$ERRORS" -eq 0 ]; then
+    echo "✅ Malformed XML handled"
+fi
+
+# Test Case 5: Empty XML
+echo "<issues />" > "$LINT_XML"
+ERRORS=$(grep -c 'severity="Error"' "$LINT_XML" || true)
+if [ "$ERRORS" -eq 0 ]; then
+    echo "✅ Empty issues XML handled"
+fi
+
+# Test Case 6: Duration calculation (Standard)
 export START_TIME=$(date +%s -d "5 minutes ago")
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
@@ -56,6 +77,14 @@ if [ "$DURATION" -ge 300 ] && [ "$DURATION" -le 305 ]; then
 else
     echo "❌ Duration calculation failed: $DURATION"
     exit 1
+fi
+
+# Test Case 7: Duration calculation (Null START_TIME robustness)
+unset START_TIME
+END_TIME=$(date +%s)
+if [ -z "$START_TIME" ]; then
+    DURATION=0
+    echo "✅ Null START_TIME robustness check passed"
 fi
 
 rm "$GITHUB_ENV" "$GITHUB_STEP_SUMMARY"

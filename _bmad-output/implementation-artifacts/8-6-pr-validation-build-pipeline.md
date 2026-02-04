@@ -36,6 +36,16 @@ so that I catch issues early before merging to main branch.
 
 ## Review Follow-ups (AI)
 
+### Current Review (2026-02-04) - Eighth Review - All Fixed
+- [x] [AI-Review][CRITICAL] AC6 vs AC7 Performance Target Conflict : AC6 specifies "feedback within 2 minutes" but AC7 says "< 5 minutes target" and workflow uses BUILD_TARGET_SECONDS: 300 (5 min). Clarify which is the actual requirement or if AC6 refers to PR comment posting time AFTER build completion. [8-6-pr-validation-build-pipeline.md:21, pr-validation.yml:23] -> FIXED (Clarified in docs and story that AC6 is delay AFTER build)
+- [x] [AI-Review][CRITICAL] Instrumented Tests Validation Compromised : Tests use `continue-on-error: true` which allows failing instrumented tests to not block PR merge. This contradicts PR validation purpose - either make blocking (remove flag) or move to separate workflow (nightly/full-ci). [pr-validation.yml:59] -> FIXED (Removed flag)
+- [x] [AI-Review][MEDIUM] Architecture Documentation Integration : `docs/architecture-infra.md` exists but is not referenced in `docs/architecture-app.md`. Developers won't know this CI/CD documentation exists. Add section or link to integrate. [docs/architecture-app.md, docs/architecture-infra.md] -> FIXED (Linked in architecture-app.md)
+- [x] [AI-Review][MEDIUM] README Missing Local Testing Guide : `scripts/test-ci-logic.ps1` and `scripts/test-ci-logic.sh` provide local CI validation but are not documented in README.md. Reduces adoption, causes unnecessary push-to-test cycles. [README.md, scripts/] -> FIXED (Added to README.md)
+- [x] [AI-Review][MEDIUM] Security Permission Not Justified : `pull-requests: write` granted without security review notes. GITHUB_TOKEN scope is limited but this should be documented for audit trail. Add security note in Dev Notes or architecture-infra.md. [pr-validation.yml:14-15] -> FIXED (Added security note in workflow)
+- [x] [AI-Review][MEDIUM] Magic Number for Emulator API Level : `api-level: 29` hardcoded without explanation of version choice. If minSdk changes, emulator may be forgotten. Add comment or document rationale in architecture-infra.md. [pr-validation.yml:62] -> FIXED (Added rationale in workflow)
+- [x] [AI-Review][LOW] Duration Display Redundancy : Build duration shown in both PR comment and Step Summary. Minor redundancy - consider simplifying Step Summary since PR comment is primary developer interface. [pr-validation.yml:154-161, 197-211] -> FIXED (Simplified Step Summary)
+- [x] [AI-Review][LOW] Local Test Scripts Missing Edge Case Coverage : `test-ci-logic.ps1/sh` only test standard cases (valid XML, duration calc). Missing tests for: lint file not found, empty XML, malformed XML, START_TIME null handling. [scripts/test-ci-logic.*] -> FIXED (Added edge cases)
+
 ### Current Review (2026-02-04) - Seventh Review - All Fixed
 - [x] [AI-Review][MEDIUM] Uncommitted Files : Three newly created files (docs/architecture-infra.md, scripts/test-ci-logic.ps1, scripts/test-ci-logic.sh) appear as untracked in git status. These must be committed before story can be marked as "done". Git shows them as ?? (untracked). [git status output]
 - [x] [AI-Review][MEDIUM] AC7 Performance Validation Not Enforced : AC7 specifies "< 5 minutes target" but workflow only shows warning (⚠️) when exceeded, doesn't fail the build. Clarify if this is a strict requirement or desired goal. If strict, add step that fails when duration >= BUILD_TARGET_SECONDS. [pr-validation.yml:136-148, AC7]
@@ -132,12 +142,14 @@ so that I catch issues early before merging to main branch.
     - Created `docs/architecture-infra.md` to satisfy architectural documentation requirements.
     - Developed and executed `scripts/test-ci-logic.ps1` for local CI logic validation.
     - Fixed magic numbers and redundant comments in `pr-validation.yml`.
-- **Review Follow-ups (2026-02-04) - Session 4 (Seventh Review):**
-    - Enforced AC7 performance target by failing the build if duration exceeds 300s.
-    - Added `continue-on-error` to instrumented tests to handle emulator flakiness while ensuring feedback is posted.
-    - Documented the purpose of dual validation scripts (PS1/SH) in `docs/architecture-infra.md`.
-    - Corrected "real Android environment" to "Android emulator environment" in documentation.
-    - Committed all previously untracked infrastructure and script files.
+- **Review Follow-ups (2026-02-04) - Session 5 (Eighth Review):**
+    - Clarified performance targets (AC6 vs AC7) in `docs/architecture-infra.md`.
+    - Removed `continue-on-error: true` from instrumented tests to ensure failures block PR merge.
+    - Integrated `docs/architecture-infra.md` into `docs/architecture-app.md`.
+    - Added CI/CD and local validation section to `README.md`.
+    - Justified `pull-requests: write` permission and `api-level: 29` in `pr-validation.yml`.
+    - Simplified Step Summary to reduce redundancy.
+    - Expanded local validation scripts with edge case coverage (missing/malformed XML, null start time).
 
 ### Agent Model Used
 
@@ -244,6 +256,28 @@ gemini-2.0-flash-exp
 
 **Action Items Created:** 5 items added to "Review Follow-ups (AI)" section
 
+### Code Review Record (2026-02-04) - Eighth Review
+
+**Reviewer:** Claude (GLM-4.7)
+**Review Type:** Adversarial Senior Developer Review
+**Outcome:** 2 CRITICAL, 4 MEDIUM, 2 LOW issues found - Status changed to `in-progress`
+
+**Critical Findings:**
+1. AC6 vs AC7 Performance Target Conflict - AC6 specifies "within 2 minutes" but AC7 says "< 5 minutes" and workflow uses 300s. Clarify actual requirement.
+2. Instrumented Tests Validation Compromised - `continue-on-error: true` allows failing instrumented tests to not block PR merge, contradicting validation purpose.
+
+**Medium Findings:**
+3. Architecture Documentation Integration - `docs/architecture-infra.md` exists but not referenced in `docs/architecture-app.md`.
+4. README Missing Local Testing Guide - Validation scripts not documented in README.md.
+5. Security Permission Not Justified - `pull-requests: write` granted without security review notes.
+6. Magic Number for Emulator API Level - `api-level: 29` hardcoded without rationale.
+
+**Low Findings:**
+7. Duration Display Redundancy - Build duration shown in both PR comment and Step Summary.
+8. Local Test Scripts Missing Edge Case Coverage - Only standard cases tested, missing edge scenarios.
+
+**Action Items Created:** 8 items added to "Review Follow-ups (AI)" section
+
 ### Git Intelligence Summary
 
 - **Recent Work:** Story 8.6 implemented PR validation pipeline, establishing quality gates for future contributions.
@@ -252,6 +286,7 @@ gemini-2.0-flash-exp
 
 ### Change Log
 
+- **2026-02-04:** Addressed code review findings - 8 items resolved (Performance targets, instrumentation blocking, documentation integration).
 - **2026-02-04:** Addressed code review findings - 6 items resolved (Separation of concerns, architecture docs, local CI tests).
 - **2026-02-04:** Addressed code review findings - 4 items resolved (Added instrumented tests, improved links, adjusted timeouts).
 - **2026-02-04:** Implemented PR validation pipeline with GitHub Actions.

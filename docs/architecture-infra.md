@@ -19,9 +19,9 @@ The pipeline executes the following checks in order:
 4. **Compilation:** Runs `./gradlew assembleDebug` to ensure the project builds successfully.
 
 #### Performance Targets
-- **Build Time:** Target is < 5 minutes (300s) for the entire validation suite.
-- **Enforcement:** The build will fail if the total duration exceeds the target, ensuring performance regressions are caught early.
-- **Caching:** Uses `gradle/actions/setup-gradle` to cache Gradle dependencies and build outputs.
+- **Build Duration (AC7):** Target is < 5 minutes (300s) for the entire validation suite (Lint, Unit Tests, Instrumented Tests, Build). The build will fail if this target is exceeded to prevent performance regressions.
+- **Feedback Delivery (AC6):** Target is < 2 minutes for the PR feedback comment to appear **after** the build completion. The consolidated summary script is optimized for rapid execution to meet this requirement.
+- **Caching:** Uses `gradle/actions/setup-gradle` to cache Gradle dependencies and build outputs, which is critical for meeting the 5-minute build target.
 
 #### PR Feedback
 - **Consolidated Summary:** A single comment is posted/updated on the PR with the status of all checks.

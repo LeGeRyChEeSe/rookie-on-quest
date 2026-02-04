@@ -12,7 +12,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: write # Required for posting/updating PR feedback comments. Token scope is limited to current repository.
 
 jobs:
   validate:
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      BUILD_TARGET_SECONDS: 300
+      BUILD_TARGET_SECONDS: 300 # AC7: Target < 5 minutes
 
     steps:
       - name: Checkout code
@@ -56,7 +56,7 @@ jobs:
         id: instrumented_tests
         if: success()
         timeout-minutes: 15
-        continue-on-error: true
+        # api-level 29 matches minSdk of the project to ensure maximum compatibility validation.
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
@@ -136,7 +136,8 @@ jobs:
           files: "app/build/test-results/**/*.xml"
 
       - name: PR Feedback Comment
-        # AC5 & AC6: Display build status in PR conversation
+        # AC5 & AC6: Display build status in PR conversation.
+        # AC6 requires feedback within 2 minutes of build completion.
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
@@ -198,14 +199,6 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo "### PR Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "### PR Validation: ${{ job.status == 'success' && '✅ PASS' || '❌ FAIL' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ job.status == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${BUILD_DURATION_SECONDS}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Lint:** ${LINT_STATUS} (${LINT_ERRORS} Errors, ${LINT_WARNINGS} Warnings)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Unit Tests:** ${{ steps.tests.outcome == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Instr. Tests:** ${{ steps.instrumented_tests.outcome == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build:** ${{ steps.build.outcome == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "[View Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)" >> $GITHUB_STEP_SUMMARY
-          echo "[View Action Run Summary](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "[View Full PR Feedback and Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY

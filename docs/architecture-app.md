@@ -16,6 +16,7 @@
 - **Repository Pattern** for data abstraction
 - **Reactive State Management** using Kotlin Flow
 - **Dependency on VRPirates Infrastructure** (critical external dependency)
+- **Automated CI/CD Pipeline** (See [Infrastructure Architecture](architecture-infra.md))
 
 ---
 

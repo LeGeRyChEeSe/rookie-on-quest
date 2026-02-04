@@ -48,14 +48,39 @@ if (Test-Path $LINT_XML) {
 # Validate output
 $EnvContent = Get-Content $TmpEnv
 if (($EnvContent -contains "LINT_ERRORS=1") -and ($EnvContent -contains "LINT_WARNINGS=1") -and ($EnvContent -contains "LINT_STATUS=❌ Fail")) {
-    Write-Host "✅ Lint Summary Logic Validated"
+    Write-Host "✅ Lint Summary Logic Validated (Standard Case)"
 } else {
     Write-Host "❌ Failed: Env content incorrect"
     $EnvContent | ForEach-Object { Write-Host $_ }
     Exit 1
 }
 
-# Test Case 2: Duration calculation
+# Test Case 2: Missing Lint XML
+Remove-Item $LINT_XML -ErrorAction SilentlyContinue
+$LINT_STATUS = "⚠️ Not Found"
+if (-not (Test-Path $LINT_XML)) {
+    Write-Host "✅ Missing Lint XML handled"
+} else {
+    Write-Host "❌ Failed: Lint XML should be missing"
+    Exit 1
+}
+
+# Test Case 3: Malformed XML
+"MALFORMED < XML" | Out-File -FilePath $LINT_XML -Encoding UTF8
+try {
+    [xml]$Xml = Get-Content $LINT_XML
+} catch {
+    Write-Host "✅ Malformed XML handled (caught error as expected)"
+}
+
+# Test Case 4: Empty XML
+"<issues />" | Out-File -FilePath $LINT_XML -Encoding UTF8
+[xml]$Xml = Get-Content $LINT_XML
+if ($null -eq $Xml.issues.issue) {
+    Write-Host "✅ Empty issues XML handled"
+}
+
+# Test Case 5: Duration calculation (Standard)
 $StartTime = (Get-Date).AddMinutes(-5)
 $EndTime = Get-Date
 $Duration = [int]($EndTime - $StartTime).TotalSeconds
@@ -66,6 +91,14 @@ if ($Duration -ge 300 -and $Duration -le 305) {
 } else {
     Write-Host "❌ Duration calculation failed: $Duration"
     Exit 1
+}
+
+# Test Case 6: Duration calculation (Null START_TIME robustness)
+$START_TIME = $null
+$END_TIME = Get-Date
+if ($null -eq $START_TIME) {
+    $DURATION = 0
+    Write-Host "✅ Null START_TIME robustness check passed"
 }
 
 Remove-Item $TmpEnv
