@@ -37,6 +37,13 @@ so that I catch issues early before merging to main branch.
 ## Review Follow-ups (AI)
 
 ### Current Review (2026-02-04) - All Fixed
+- [x] [AI-Review][HIGH] Git Discrepancy : `release.yml` shows as `new file mode 100644` (651 lines) in git diff but story claims it's from previous stories (8.1-8.5). A "new file" in diff means it didn't exist in main - either add to File List or explain discrepancy. [.github/workflows/release.yml]
+- [x] [AI-Review][MEDIUM] Performance Target Incoherence : AC7 specifies "< 5 minutes target" but workflow comment says "Target < 10m with Instrumented Tests". Clarify actual target and add validation step that fails if timeout exceeded. [pr-validation.yml:140, AC7]
+- [x] [AI-Review][MEDIUM] Permission Excess : `checks: write` permission granted but workflow doesn't use GitHub Checks API (uses PR comments instead). Either remove permission or implement proper checks. [pr-validation.yml:17]
+- [x] [AI-Review][LOW] Documentation Verbosity : Redundant comment "# AC3: Split into separate steps..." repeats what's already obvious from step names. Consider simplifying. [pr-validation.yml:45-46]
+- [x] [AI-Review][LOW] Variable Fragility : `START_TIME` used for duration calculation but no null-check if timer step fails. Add defensive check before using BUILD_DURATION_SECONDS. [pr-validation.yml:42-43, 78-84, 184-198]
+
+### Current Review (2026-02-04) - All Fixed
 - [x] [AI-Review][MEDIUM] Git Discrepancy : `.github/workflows/release.yml` shows 651 modified lines in git diff but not documented in Story File List. Add note or move to separate story if changes are unrelated. [8-6-pr-validation-build-pipeline.md:132-137]
 - [x] [AI-Review][LOW] AC Gap : Epic 8 specifies instrumented tests but workflow only runs unit tests. Consider adding `connectedAndroidTest` step with fallback if no devices available. [pr-validation.yml:53-57]
 - [x] [AI-Review][LOW] Link Format : PR feedback comment link to Action Run Summary works but lint artifact links are not directly clickable from PR conversation. Improve navigation. [pr-validation.yml:141]
@@ -66,9 +73,9 @@ so that I catch issues early before merging to main branch.
 - **Feedback:** 
     - For test results: `EnricoMi/publish-unit-test-result-action` is highly recommended for automatic PR comments with test summaries.
     - For Lint: Integrated custom `github-script` to post consolidated status (Lint + Build) in PR comments.
-- **Permissions:** Ensure the workflow has `checks: write` and `pull-requests: write` permissions if using comment/check actions.
+- **Permissions:** Minimum required permissions: `contents: read` and `pull-requests: write`.
 - **Tracking:** Updated `sprint-status.yaml` to reflect story progress.
-- **Git Discrepancy Note:** The presence of `release.yml` in the global `git diff main...HEAD` is due to unmerged changes from previous stories (8.1-8.5). This story (8.6) does not modify `release.yml`.
+- **Git Discrepancy Note:** The presence of `release.yml` as a `new file mode 100644` in the global `git diff main...HEAD` is due to unmerged changes from previous stories (8.1-8.5) which are parents of this worktree. This story (8.6) does not modify `release.yml` itself but carries it as part of the unmerged feature block.
 
 ### Project Structure Notes
 
@@ -96,6 +103,12 @@ so that I catch issues early before merging to main branch.
     - Increased global timeout to 30 minutes for safety with instrumented tests.
     - Improved PR comment with direct link to Artifacts tab for easier report access.
     - Added clarification regarding `release.yml` discrepancy in git diff.
+- **Review Follow-ups (2026-02-04) - Session 2:**
+    - Aligned performance targets to < 5 minutes (AC7).
+    - Removed excess `checks: write` permission.
+    - Simplified workflow documentation (removed redundant comments).
+    - Added defensive null-checks for build duration calculation.
+    - Explicitly documented `release.yml` as an unmerged dependency in File List.
 
 ### Agent Model Used
 
@@ -152,6 +165,21 @@ gemini-2.0-flash-exp
 
 **Findings:** All previous review items resolved. Instrumented tests added, timeouts aligned, and documentation discrepancies clarified.
 
+### Code Review Record (2026-02-04) - Fifth Review
+
+**Reviewer:** Claude (GLM-4.7)
+**Review Type:** Adversarial Senior Developer Review
+**Outcome:** 1 HIGH, 2 MEDIUM, 2 LOW issues found - Status changed to `in-progress`
+
+**Critical Findings:**
+1. Git discrepancy - `release.yml` marked as "new file" (651 lines) in git diff but story claims it's from previous stories. "new file mode" means it didn't exist in main - documentation contradiction.
+2. Performance target incoherence - AC7 specifies "< 5 min" but workflow comment says "< 10m with Instrumented Tests".
+3. Permission excess - `checks: write` granted but workflow uses PR comments, not GitHub Checks API.
+4. Documentation verbosity - Redundant comments repeat obvious information.
+5. Variable fragility - `START_TIME` has no null-check if timer step fails.
+
+**Action Items Created:** 5 items added to "Review Follow-ups (AI)" section
+
 ### Git Intelligence Summary
 
 - **Recent Work:** Story 8.6 implemented PR validation pipeline, establishing quality gates for future contributions.
@@ -169,6 +197,12 @@ gemini-2.0-flash-exp
 - `app/src/main/java/com/vrpirates/rookieonquest/data/MainRepository.kt` (Modified)
 - `app/src/main/AndroidManifest.xml` (Modified)
 - `app/src/main/java/com/vrpirates/rookieonquest/worker/DownloadWorker.kt` (Modified)
+
+### Unmerged Dependencies (from Stories 8.1-8.5)
+
+*These files appear as "new" in `git diff main...HEAD` because their parent stories have not yet been merged to main.*
+
+- `.github/workflows/release.yml` (New in this branch block)
 
 ### Tracking Files
 

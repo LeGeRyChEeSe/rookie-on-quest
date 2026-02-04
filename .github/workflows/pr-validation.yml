@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: read
-  checks: write
   pull-requests: write
 
 jobs:
@@ -42,9 +41,6 @@ jobs:
       - name: Start Timer
         run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
 
-      # AC3: Split into separate steps for true fail-fast behavior
-      # This ensures we catch quality issues before expensive compilation
-      
       - name: Run Lint
         id: lint
         timeout-minutes: 5
@@ -58,7 +54,6 @@ jobs:
 
       - name: Run Instrumented Tests
         id: instrumented_tests
-        # Optional: Runs if previous steps pass and not on automated syncs
         if: success()
         timeout-minutes: 15
         uses: reactivecircus/android-emulator-runner@v2
@@ -79,7 +74,11 @@ jobs:
         if: always()
         run: |
           END_TIME=$(date +%s)
-          DURATION=$((END_TIME - START_TIME))
+          if [ -n "$START_TIME" ]; then
+            DURATION=$((END_TIME - START_TIME))
+          else
+            DURATION=0
+          fi
           echo "BUILD_DURATION_SECONDS=$DURATION" >> $GITHUB_ENV
           echo "Build took $DURATION seconds"
 
@@ -133,7 +132,7 @@ jobs:
             const { LINT_ERRORS, LINT_WARNINGS, LINT_STATUS, BUILD_DURATION_SECONDS } = process.env;
             const jobStatus = "${{ job.status }}";
             const lintStatus = LINT_STATUS;
-            const duration = parseInt(BUILD_DURATION_SECONDS);
+            const duration = parseInt(BUILD_DURATION_SECONDS || 0);
             const minutes = Math.floor(duration / 60);
             const seconds = duration % 60;
             const timeStr = `${minutes}m ${seconds}s`;
@@ -144,7 +143,7 @@ jobs:
             const body = `### PR Validation Summary ${icon}
             
             **Status:** ${statusText}
-            **Duration:** ${timeStr} ${duration < 600 ? '✅' : '⚠️'} (Target < 10m with Instrumented Tests)
+            **Duration:** ${timeStr} ${duration < 300 ? '✅' : '⚠️'} (Target < 5m)
             
             | Check | Status | Details |
             |-------|--------|---------|
