@@ -1,0 +1,180 @@
+# GitHub Actions Workflow for PR Validation
+#
+# This workflow automatically validates pull requests to the main branch.
+# It performs quality checks (lint), unit tests, and verifies compilation.
+#
+# Performance: Uses Gradle caching to minimize build time (Target < 5 minutes)
+#
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [ opened, synchronize, reopened ]
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  validate:
+    name: Lint, Test & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Start Timer
+        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      # AC3: Split into separate steps for true fail-fast behavior
+      # This ensures we catch quality issues before expensive compilation
+      
+      - name: Run Lint
+        id: lint
+        timeout-minutes: 5
+        run: ./gradlew lintDebug
+
+      - name: Run Unit Tests
+        id: tests
+        if: success() || failure()
+        timeout-minutes: 5
+        run: ./gradlew testDebugUnitTest
+
+      - name: Build Debug APK
+        id: build
+        if: success() || failure()
+        timeout-minutes: 5
+        run: ./gradlew assembleDebug
+
+      - name: Calculate Build Duration
+        if: always()
+        run: |
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+          echo "BUILD_DURATION_SECONDS=$DURATION" >> $GITHUB_ENV
+          echo "Build took $DURATION seconds"
+
+      - name: Generate Lint Summary
+        if: always()
+        shell: bash
+        run: |
+          LINT_XML="app/build/reports/lint-results-debug.xml"
+          if [ -f "$LINT_XML" ]; then
+            ERRORS=$(grep -c 'severity="Error"' "$LINT_XML" || true)
+            [ -z "$ERRORS" ] && ERRORS=0
+            WARNINGS=$(grep -c 'severity="Warning"' "$LINT_XML" || true)
+            [ -z "$WARNINGS" ] && WARNINGS=0
+            echo "LINT_ERRORS=$ERRORS" >> $GITHUB_ENV
+            echo "LINT_WARNINGS=$WARNINGS" >> $GITHUB_ENV
+            echo "LINT_STATUS=$([ "$ERRORS" -eq 0 ] && echo "✅ Pass" || echo "❌ Fail")" >> $GITHUB_ENV
+          else
+            echo "LINT_ERRORS=N/A" >> $GITHUB_ENV
+            echo "LINT_WARNINGS=N/A" >> $GITHUB_ENV
+            echo "LINT_STATUS=⚠️ Not Found" >> $GITHUB_ENV
+          fi
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: app/build/test-results/testDebugUnitTest/
+
+      - name: Upload Lint Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-debug.html
+
+      - name: Publish Test Results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: "app/build/test-results/**/*.xml"
+
+      - name: PR Feedback Comment
+        # AC5 & AC6: Display build status in PR conversation
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { LINT_ERRORS, LINT_WARNINGS, LINT_STATUS, BUILD_DURATION_SECONDS } = process.env;
+            const jobStatus = "${{ job.status }}";
+            const lintStatus = LINT_STATUS;
+            const duration = parseInt(BUILD_DURATION_SECONDS);
+            const minutes = Math.floor(duration / 60);
+            const seconds = duration % 60;
+            const timeStr = `${minutes}m ${seconds}s`;
+            
+            const icon = jobStatus === 'success' ? '✅' : '❌';
+            const statusText = jobStatus === 'success' ? 'All checks passed!' : 'Validation failed.';
+            
+            const body = `### PR Validation Summary ${icon}
+            
+            **Status:** ${statusText}
+            **Duration:** ${timeStr} ${duration < 300 ? '✅' : '⚠️'} (Target < 5m)
+            
+            | Check | Status | Details |
+            |-------|--------|---------|
+            | **Lint** | ${lintStatus} | ${LINT_ERRORS} Errors, ${LINT_WARNINGS} Warnings |
+            | **Tests** | ${{ steps.tests.outcome == 'success' ? '✅ Pass' : (steps.tests.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | See Test Summary below |
+            | **Build** | ${{ steps.build.outcome == 'success' ? '✅ Pass' : (steps.build.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | assembleDebug |
+            
+            ---
+            *Reports and artifacts are available in the [Action Run Summary](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})*`;
+            
+            // Find existing comment to update or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(comment => comment.user.login === 'github-actions[bot]' && comment.body.includes('PR Validation Summary'));
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            }
+
+      - name: Build summary
+        if: always()
+        shell: bash
+        run: |
+          echo "### PR Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ job.status == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** ${BUILD_DURATION_SECONDS}s" >> $GITHUB_STEP_SUMMARY
+          echo "- **Lint:** ${LINT_STATUS} (${LINT_ERRORS} Errors, ${LINT_WARNINGS} Warnings)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests:** ${{ steps.tests.outcome == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build:** ${{ steps.build.outcome == 'success' && '✅ Pass' || '❌ Fail' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View Action Run Summary](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY

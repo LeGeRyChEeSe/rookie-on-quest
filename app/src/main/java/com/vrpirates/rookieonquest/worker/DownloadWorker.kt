@@ -3,6 +3,7 @@ package com.vrpirates.rookieonquest.worker
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Environment
@@ -10,6 +11,7 @@ import android.os.StatFs
 import android.util.Base64
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ForegroundInfo
@@ -705,7 +707,13 @@ class DownloadWorker(
             .setProgress(100, progressPercent, false)
             .build()
 
-        notificationManager.notify(NOTIFICATION_ID, notification)
+        if (ContextCompat.checkSelfPermission(
+                applicationContext,
+                android.Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationManager.notify(NOTIFICATION_ID, notification)
+        }
     }
 
     /**
