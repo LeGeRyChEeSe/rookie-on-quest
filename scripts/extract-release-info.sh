@@ -7,6 +7,8 @@
 #   version      - Extract versionName from build.gradle.kts
 #   version-code - Extract versionCode from build.gradle.kts
 #   changelog    - Extract changelog section for [version] from CHANGELOG.md
+#                  (Supports optional date suffix e.g., ## [2.5.0] - 2026-02-04)
+#                  (Falls back to base version if RC/beta/alpha header is missing)
 
 MODE=$1
 VERSION=$2
@@ -47,13 +49,27 @@ case $MODE in
         # Escape version for regex (dots are literal)
         ESC_VERSION=$(echo "$VERSION" | sed 's/\./\\./g')
         
-        # Find start line (matches ^## [X.Y.Z])
+        # Find start line (matches ^## [X.Y.Z] or ^## [X.Y.Z] - YYYY-MM-DD)
         # Using start-of-line anchor ^ to avoid false positives
-        START_LINE=$(grep -n "^## \[$ESC_VERSION\]" "$CHANGELOG" | head -n 1 | cut -d: -f1)
+        # Regex matches the version followed by optional suffix
+        START_LINE=$(grep -nE "^## \[$ESC_VERSION\]( - .*)?$" "$CHANGELOG" | head -n 1 | cut -d: -f1)
         
         if [ -z "$START_LINE" ]; then
             # Try without brackets as fallback for robustness
-            START_LINE=$(grep -n "^## $ESC_VERSION" "$CHANGELOG" | head -n 1 | cut -d: -f1)
+            START_LINE=$(grep -nE "^## $ESC_VERSION( - .*)?$" "$CHANGELOG" | head -n 1 | cut -d: -f1)
+        fi
+
+        if [ -z "$START_LINE" ] && [[ "$VERSION" == *"-"* ]]; then
+            # AC6 Fallback: If specific RC version (e.g., 2.5.0-rc.1) not found in CHANGELOG.md,
+            # we fall back to the base version (2.5.0).
+            BASE_VERSION=$(echo "$VERSION" | cut -d- -f1)
+            ESC_BASE=$(echo "$BASE_VERSION" | sed 's/\./\\./g')
+            echo "Notice: Changelog section for RC version [$VERSION] not found. Falling back to base version [$BASE_VERSION] for release notes."
+            
+            START_LINE=$(grep -nE "^## \[$ESC_BASE\]( - .*)?$" "$CHANGELOG" | head -n 1 | cut -d: -f1)
+            if [ -z "$START_LINE" ]; then
+                START_LINE=$(grep -nE "^## $ESC_BASE( - .*)?$" "$CHANGELOG" | head -n 1 | cut -d: -f1)
+            fi
         fi
 
         if [ -z "$START_LINE" ]; then

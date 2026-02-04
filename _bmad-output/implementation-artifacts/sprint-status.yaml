@@ -102,7 +102,7 @@ development_status:
   8-3-version-and-changelog-extraction: done
   8-4-release-creation-and-formatting: done
   8-4-1-fix-proguard-gson-obfuscation: done
-  8-5-release-candidate-build-support: backlog
+  8-5-release-candidate-build-support: done
   8-6-pr-validation-build-pipeline: backlog
   8-7-build-dependency-caching-and-performance: backlog
   epic-8-retrospective: optional
