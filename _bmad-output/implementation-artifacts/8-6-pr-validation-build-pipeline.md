@@ -1,6 +1,6 @@
 # Story 8.6: PR Validation Build Pipeline
 
-Status: review
+Status: done
 
 ## Story
 
