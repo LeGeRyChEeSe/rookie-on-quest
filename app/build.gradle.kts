@@ -148,16 +148,14 @@ android {
                     logger.lifecycle("[signing] Using production release signing config from keystore.properties")
                     signingConfigs.getByName("release")
                 }
-                else -> {
-                    if (isCI) {
-                        // In CI, we only warn during configuration. 
-                        // The build will naturally fail if a release task is executed 
-                        // because the 'release' signingConfig won't be fully configured.
-                        logger.warn("[signing] CI/CD build without keystore. Release builds will fail if attempted.")
-                    }
+                isCI -> {
+                    // In CI, we only warn during configuration. 
+                    // The build will naturally fail if a release task is executed 
+                    // because the 'release' signingConfig won't be fully configured.
+                    logger.warn("[signing] CI/CD build without keystore. Release builds will fail if attempted.")
                     signingConfigs.getByName("debug")
                 }
-            }
+                else -> {
                     // Local build without keystore: Allow but warn loudly with actionable guidance
                     logger.warn("[signing] ========================================")
                     logger.warn("[signing] WARNING: LOCAL BUILD - DEBUG SIGNING")
