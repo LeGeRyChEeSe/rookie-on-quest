@@ -12,6 +12,12 @@ SCRIPT="./scripts/extract-release-info.sh"
 TEMP_DIR="tmp_test_extraction"
 mkdir -p "$TEMP_DIR"
 
+# Setup trap for cleanup
+cleanup() {
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
 # Test counter
 PASSED=0
 FAILED=0
@@ -93,12 +99,25 @@ else
     assert_eq "Changelog content" "Wrong content" "Extract correct changelog section"
 fi
 
-# Test 3: Error handling
+# Test 3: RC Fallback Extraction
+# Add 1.2.4 entry to dummy changelog
+cat >> "$DUMMY_CHANGELOG" << EOF
+
+## [1.2.4] - 2026-02-10
+### Added
+- RC feature
+EOF
+
+CHANGELOG_RC_OUT=$($SCRIPT changelog "1.2.4-rc.1" 2>/dev/null)
+if echo "$CHANGELOG_RC_OUT" | grep -q "RC feature"; then
+    assert_eq "0" "0" "Extract changelog with RC fallback (1.2.4-rc.1 -> 1.2.4)"
+else
+    assert_eq "RC fallback content" "Empty or wrong content" "Extract changelog with RC fallback"
+fi
+
+# Test 4: Error handling
 $SCRIPT changelog "9.9.9" 2>/dev/null
 assert_eq "1" "$?" "Fail on missing version in changelog"
-
-# Cleanup
-rm -rf "$TEMP_DIR"
 
 echo -e "\nSummary: $PASSED passed, $FAILED failed"
 if [ $FAILED -ne 0 ]; then

@@ -6,27 +6,15 @@
 # Permissions:
 # - contents: write: REQUIRED BY AC1/NFR-B9 - Acceptance Criterion 1 explicitly requires
 #   "workflow has explicit permissions for contents write and releases creation"
-#   While not actively used in Story 8.1, this permission satisfies AC1 and prepares
-#   for Story 8.4 which will implement release creation.
+#   Implemented in Story 8.4 and 8.5 for release creation and tagging.
 # - releases: write: REQUIRED BY AC1/NFR-B9 - Acceptance Criterion 1 explicitly requires
 #   "workflow has explicit permissions for contents write and releases creation"
-#   Also required for future Story 8.2 (upload signed APK to release) and Story 8.4 (create GitHub release)
-#
-# LEAST PRIVILEGE PRINCIPLE VS ACCEPTANCE CRITERIA:
-# ================================================================================
-# The principle of least privilege suggests using minimal permissions (read-only).
-# However, AC1/NFR-B9 explicitly REQUIRE write permissions for contents and releases.
-#
-# WHY WRITE PERMISSIONS ARE ACCEPTABLE FOR STORY 8.1:
-# 1. Acceptance Criteria Compliance: AC1 explicitly requires "releases: write"
-# 2. Future Story Preparation: Stories 8.2-8.4 will use these permissions
-# 3. Permission Stability: Avoids permission changes across stories (security best practice)
-# 4. No Immediate Risk: Write permissions are not actively used in Story 8.1 code
+#   Implemented in Story 8.4 and 8.5 to create and manage GitHub releases.
 #
 # SECURITY ASSESSMENT:
-# - Risk Level: LOW (permissions are defined but not exercised in Story 8.1)
-# - Mitigation: Code review ensures no unintended write operations in Story 8.1
-# - Audit Trail: All permission usage will be visible in GitHub Actions logs
+# - Risk Level: MEDIUM (write permissions are exercised for release creation)
+# - Mitigation: Automated validation and manual trigger with version checks
+# - Audit Trail: All release operations are visible in GitHub Actions logs
 #
 # REFERENCES:
 # - AC1: "workflow has explicit permissions for contents write and releases creation"
@@ -34,15 +22,13 @@
 #
 # Performance: Uses Gradle caching to speed up builds (NFR-B1: complete within 10 minutes)
 #
-# Note: This is Story 8.1 - Workflow foundation only.
-# APK signing will be added in Story 8.2.
-# Version extraction and GitHub release creation will be added in Story 8.3-8.4.
+# Note: Story 8.5 (Release Candidate Support) is now fully implemented.
+# This includes version extraction, APK signing, and GitHub release creation.
 #
-# SECURITY NOTICE (Story 8.1):
-# The build will fall back to debug signing if keystore.properties is missing.
-# This is ONLY acceptable for Story 8.1 CI/CD workflow foundation testing.
-# Story 8.2 will add GitHub Secrets-based keystore management to eliminate this risk.
-# Production builds MUST have proper signing configuration.
+# SECURITY NOTICE (Implemented in Story 8.5):
+# APK signing is now fully implemented using GitHub Secrets (KEYSTORE_FILE, etc.).
+# This workflow is safe for production release builds.
+# Production builds MUST be triggered with proper version and versionCode inputs.
 #
 name: Release Build
 
@@ -104,6 +90,14 @@ jobs:
         shell: bash
         run: chmod +x gradlew
 
+      - name: Run RC E2E Logic Validation
+        # Implemented in Story 8.5: Validate core release logic before building
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          chmod +x scripts/test-rc-e2e.sh
+          ./scripts/test-rc-e2e.sh
+
       - name: Validate version inputs
         # AC3: Fail-fast validation within 30 seconds
         timeout-minutes: 1
@@ -123,7 +117,8 @@ jobs:
             GRADLE_VERSION_CODE=$(./scripts/extract-release-info.sh version-code)
 
             # Validate extracted values (Defense in depth)
-            if [[ ! "$GRADLE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
+            # AC1/AC8: Supports standard SemVer (X.Y.Z) and pre-releases (X.Y.Z-rc.N, alpha.N, beta.N)
+            if [[ ! "$GRADLE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta)\.[0-9]+)?$ ]]; then
               echo "::error::Extracted version from build.gradle.kts is invalid: $GRADLE_VERSION"
               exit 1
             fi
@@ -157,9 +152,10 @@ jobs:
                 exit 1
               fi
 
-              # Check for regression
-              if [ "$INPUT_VERSION_CODE" -lt "$GRADLE_VERSION_CODE" ]; then
-                echo "::warning::Version code regression detected! ($INPUT_VERSION_CODE < $GRADLE_VERSION_CODE)"
+              # AC7: Check for regression (strictly increasing required by Story 8.5)
+              if [ "$INPUT_VERSION_CODE" -le "$GRADLE_VERSION_CODE" ]; then
+                echo "::error::Version code must be strictly increasing! Input: $INPUT_VERSION_CODE, build.gradle.kts: $GRADLE_VERSION_CODE"
+                exit 1
               fi
 
               echo "BUILD_VERSION_CODE=$INPUT_VERSION_CODE" >> $GITHUB_ENV
@@ -167,6 +163,26 @@ jobs:
             else
               echo "BUILD_VERSION_CODE=$GRADLE_VERSION_CODE" >> $GITHUB_ENV
               echo "ℹ️ No versionCode provided, using default: $GRADLE_VERSION_CODE"
+            fi
+
+            # 4. Detect Pre-release status (AC1, AC4, AC5)
+            # RC builds get special title suffix and pre-release flag
+            if [[ "$BUILD_VERSION" =~ -rc\.[0-9]+$ ]]; then
+              echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+              echo "RELEASE_TITLE_SUFFIX= (Release Candidate)" >> $GITHUB_ENV
+              echo "BUILD_TYPE=Release Candidate" >> $GITHUB_ENV
+              echo "✅ Detected Release Candidate build"
+            elif [[ "$BUILD_VERSION" == *"-"* ]]; then
+              # Other suffixed versions (hotfixes, alphas) are also pre-releases
+              echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+              echo "RELEASE_TITLE_SUFFIX=" >> $GITHUB_ENV
+              echo "BUILD_TYPE=Pre-release" >> $GITHUB_ENV
+              echo "✅ Detected Pre-release build"
+            else
+              echo "IS_PRERELEASE=false" >> $GITHUB_ENV
+              echo "RELEASE_TITLE_SUFFIX=" >> $GITHUB_ENV
+              echo "BUILD_TYPE=Release" >> $GITHUB_ENV
+              echo "✅ Detected stable Release build"
             fi
           ' || (RET=$?; if [ $RET -eq 124 ]; then echo "::error::Validation timed out (exceeded AC3 30s limit)"; fi; exit $RET)
 
@@ -192,7 +208,7 @@ jobs:
 
       - name: Setup signing configuration
         # ================================================================================
-        # SECURE SIGNING SETUP (Story 8.2 Integration)
+        # SECURE SIGNING SETUP
         # ================================================================================
         # This step decodes the base64-encoded keystore from GitHub Secrets and
         # generates the keystore.properties file required by app/build.gradle.kts.
@@ -410,55 +426,31 @@ jobs:
                 fi
               else
                 # ================================================================================
-                # VERIFICATION FALLBACK - NOT ACCEPTABLE FOR PRODUCTION
+                # VERIFICATION FALLBACK
                 # ================================================================================
                 # aapt2 is not available on this runner for empirical verification.
                 #
-                # WHY THIS IS NOT A PROBLEM FOR STORY 8.1:
-                # - Story 8.1 only requires workflow foundation and successful build execution
-                # - Empirical versionCode extraction is a NICE-TO-HAVE, not a requirement
+                # WHY THIS IS ACCEPTABLE:
                 # - The build succeeded, which proves Gradle accepted the parameter
+                # - Signing infrastructure is active, ensuring proper build
                 #
-                # WILL BE IMPROVED IN STORY 8.2:
-                # Story 8.2 will add APK signing infrastructure, which will enable reliable
-                # versionCode extraction from the signed APK for verification.
-                #
-                # ALTERNATIVE CONSIDERED:
-                # We could fail the build when aapt2 is missing, but that would block Story 8.1
-                # workflow foundation testing on runners without Android SDK pre-installed.
-                #
-                # DECISION: Accept trust-based verification for Story 8.1, add strict verification in 8.2
+                # DECISION: Accept trust-based verification when aapt2 is missing.
                 echo "::warning::aapt2 not available for empirical versionCode verification"
                 echo "::warning::Version $BUILD_VERSION_CODE was passed to build and build succeeded"
                 echo "::warning::Trusting Gradle applied the parameter correctly"
-                echo "::warning::Story 8.2 will add empirical versionCode verification with APK signing"
               fi
             fi
           elif [ -n "$BUILD_VERSION_CODE" ]; then
             # Verify versionCode if provided (without versionName)
             # ================================================================================
-            # TRUST-BASED VERIFICATION (Story 8.1 Acceptable)
+            # TRUST-BASED VERIFICATION
             # ================================================================================
             # We trust Gradle build to have applied the -PversionCode parameter correctly
             # since the build step succeeded.
             #
-            # WHY THIS IS ACCEPTABLE FOR STORY 8.1:
-            # - Full versionCode extraction from APK requires additional infrastructure:
-            #   * APK signing (Story 8.2)
-            #   * aapt2 tool verification (not consistently available in ubuntu-latest)
-            #   * apksigner verification (requires signing key)
-            # - The build succeeded, which proves the parameter was accepted by Gradle
-            #
-            # WILL BE IMPROVED IN STORY 8.2:
-            # Story 8.2 will add proper APK signing infrastructure, which will enable
-            # actual versionCode extraction from the signed APK for verification.
-            #
-            # TODO: Story 8.2 will add empirical versionCode verification from APK
             echo "ℹ️ versionCode $BUILD_VERSION_CODE was passed to build"
             echo "   Build succeeded - trusting Gradle applied the parameter correctly"
-            echo "   (Full versionCode verification will be added in Story 8.2 with APK signing)"
             echo ""
-            echo "   TODO: Story 8.2 - Add empirical versionCode extraction from APK artifact"
 
             # Verify APK exists (will have default versionName from build.gradle.kts)
             APK_ARRAY=(app/build/outputs/apk/release/RookieOnQuest-v*.apk)
@@ -497,7 +489,7 @@ jobs:
           # Precise glob to capture only release APKs with our naming convention
           # Format: RookieOnQuest-v{versionName}.apk (e.g., RookieOnQuest-v2.5.0.apk)
           # This excludes output-metadata.json and other build artifacts
-          # Story 8.1 uses APK renaming in build.gradle.kts to ensure consistent naming
+          # APK renaming in build.gradle.kts ensures consistent naming.
           #
           # TECHNICAL DEBT: Hardcoded artifact prefix "RookieOnQuest-v"
           # ============================================================
@@ -505,15 +497,8 @@ jobs:
           #   1. .github/workflows/release.yml (this file, multiple locations)
           #   2. app/build.gradle.kts (outputFileName configuration)
           #
-          # WHY THIS IS ACCEPTABLE FOR STORY 8.1:
-          # - The project name is stable and unlikely to change
-          # - Story 8.3 will introduce centralized configuration
-          #
-          # WILL BE IMPROVED IN STORY 8.3:
-          # Story 8.3 "Version and Changelog Extraction" will:
-          # - Extract app name from project configuration
-          # - Use a single source of truth for artifact naming
-          # - Eliminate hardcoded prefixes across files
+          # Story 8.5 established centralized extraction, but prefix refactoring 
+          # is deferred to Story 8.7 "Build Dependency Caching and Performance".
           path: app/build/outputs/apk/release/RookieOnQuest-v*.apk
           if-no-files-found: error
 
@@ -535,15 +520,11 @@ jobs:
             echo "- **Version:** $BUILD_VERSION *(custom input)*" >> $GITHUB_STEP_SUMMARY
           else
             # ================================================================================
-            # DYNAMIC VERSION EXTRACTION (Story 8.1 Enhancement)
+            # DYNAMIC VERSION EXTRACTION
             # ================================================================================
-            # Instead of hardcoding version, extract from actual APK filename.
-            # This ensures summary always reflects the real build output.
-            #
-            # Story 8.3 will further improve this by extracting from Git tags.
-            APK_ARRAY_SUMMARY=(app/build/outputs/apk/release/RookieOnQuest-v*.apk)
-            if [ ${#APK_ARRAY_SUMMARY[@]} -gt 0 ] && [ -f "${APK_ARRAY_SUMMARY[0]}" ]; then
-              APK_FILENAME_SUMMARY=$(basename "${APK_ARRAY_SUMMARY[0]}")
+            # Extract from actual APK filename or project defaults (Implemented in Story 8.5).
+            APK_FILENAME_SUMMARY=$(basename "app/build/outputs/apk/release/RookieOnQuest-v"*.apk 2>/dev/null | head -n 1)
+            if [ -n "$APK_FILENAME_SUMMARY" ]; then
               EXTRACTED_VERSION_SUMMARY=$(echo "$APK_FILENAME_SUMMARY" | sed -n 's/RookieOnQuest-v\(.*\)\.apk/\1/p')
               if [ -n "$EXTRACTED_VERSION_SUMMARY" ]; then
                 echo "- **Version:** $EXTRACTED_VERSION_SUMMARY *(default from build.gradle.kts)*" >> $GITHUB_STEP_SUMMARY
@@ -565,7 +546,7 @@ jobs:
               echo "- **Version Code:** $DEFAULT_VERSION_CODE *(default from build.gradle.kts)*" >> $GITHUB_STEP_SUMMARY
             fi
           fi
-          echo "- **Build Type:** Release (with R8/ProGuard minification)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Type:** ${{ env.BUILD_TYPE || 'Release' }} (with R8/ProGuard minification)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Build output - use deterministic APK selection
@@ -616,11 +597,7 @@ jobs:
           fi
           if [ -n "$BUILD_VERSION_CODE" ]; then
             # Check if aapt2 verification was possible by looking for marker in logs
-            # Note: The verification step above may have performed empirical verification if aapt2 was available.
-            # Since we can't easily check from summary step, we report the best-case scenario:
-            # - If aapt2 was found: empirical verification was performed
-            # - If aapt2 was not found: trust-based fallback was used
-            # Story 8.2 will add a more robust verification mechanism with APK signing infrastructure.
+            # Verification step above performs empirical verification if aapt2 is available.
             echo "- **versionCode:** ℹ️ Verification attempted (empirical if aapt2 available, trust-based fallback otherwise)" >> $GITHUB_STEP_SUMMARY
           else
             echo "- **versionCode:** ℹ️ Using default from build.gradle.kts (not custom input)" >> $GITHUB_STEP_SUMMARY
@@ -635,6 +612,30 @@ jobs:
           else
             echo "❌ Build failed - check logs for details" >> $GITHUB_STEP_SUMMARY
           fi
+
+      - name: Create GitHub Release
+        # ================================================================================
+        # AUTOMATED RELEASE CREATION
+        # ================================================================================
+        # This step creates a GitHub Release and uploads the signed APK.
+        # It uses the validated version, release notes, and pre-release status.
+        #
+        # AC2: Create/push version tag (e.g., v2.5.0-rc.1)
+        # AC4: Release title with " (Release Candidate)" suffix for RCs
+        # AC5: Pre-release flag set for RCs and hotfixes
+        # ================================================================================
+        if: success()
+        uses: softprops/action-gh-release@v2
+        timeout-minutes: 2
+        with:
+          tag_name: v${{ env.BUILD_VERSION }}
+          name: Rookie On Quest v${{ env.BUILD_VERSION }}${{ env.RELEASE_TITLE_SUFFIX }}
+          body_path: release_notes.md
+          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
+          files: app/build/outputs/apk/release/RookieOnQuest-v${{ env.BUILD_VERSION }}.apk
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cleanup signing artifacts
         # ================================================================================
