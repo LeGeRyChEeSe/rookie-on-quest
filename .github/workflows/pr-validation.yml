@@ -1,14 +1,205 @@
+# GitHub Actions Workflow for PR Validation
+#
+# This workflow automatically validates pull requests to the main branch.
+# It performs quality checks (lint), unit tests, and verifies compilation.
+#
 name: PR Validation
 
 on:
   pull_request:
     branches: [ main ]
+    types: [ opened, synchronize, reopened ]
   workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write # Required for posting/updating PR feedback comments. Token scope is limited to current repository.
 
 jobs:
   validate:
+    name: Lint, Test & Build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BUILD_TARGET_SECONDS: 300 # AC7: Target < 5 minutes
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Build
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Start Timer
+        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Run Lint
+        id: lint
+        timeout-minutes: 5
+        run: ./gradlew lintDebug
+
+      - name: Run Unit Tests
+        id: tests
+        if: success() || failure()
+        timeout-minutes: 5
+        run: ./gradlew testDebugUnitTest
+
+      - name: Run Instrumented Tests
+        id: instrumented_tests
+        if: success()
+        timeout-minutes: 15
+        # api-level 29 matches minSdk of the project to ensure maximum compatibility validation.
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: default
+          arch: x86_64
+          profile: Nexus 6
+          script: ./gradlew connectedDebugAndroidTest
+
+      - name: Build Debug APK
+        id: build
+        if: success() || failure()
+        timeout-minutes: 5
         run: ./gradlew assembleDebug
+
+      - name: Calculate Build Duration
+        if: always()
+        run: |
+          END_TIME=$(date +%s)
+          if [ -n "$START_TIME" ]; then
+            DURATION=$((END_TIME - START_TIME))
+          else
+            DURATION=0
+          fi
+          echo "BUILD_DURATION_SECONDS=$DURATION" >> $GITHUB_ENV
+          echo "Build took $DURATION seconds"
+
+      - name: Enforce Performance Target (AC7)
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "$BUILD_DURATION_SECONDS" ]; then
+            if [ "$BUILD_DURATION_SECONDS" -ge "$BUILD_TARGET_SECONDS" ]; then
+              echo "❌ ERROR: Build took $BUILD_DURATION_SECONDS seconds, which exceeds the target of $BUILD_TARGET_SECONDS seconds."
+              exit 1
+            fi
+          fi
+
+      - name: Generate Lint Summary
+        if: always()
+        shell: bash
+        run: |
+          LINT_XML="app/build/reports/lint-results-debug.xml"
+          if [ -f "$LINT_XML" ]; then
+            ERRORS=$(grep -c 'severity="Error"' "$LINT_XML" || true)
+            [ -z "$ERRORS" ] && ERRORS=0
+            WARNINGS=$(grep -c 'severity="Warning"' "$LINT_XML" || true)
+            [ -z "$WARNINGS" ] && WARNINGS=0
+            echo "LINT_ERRORS=$ERRORS" >> $GITHUB_ENV
+            echo "LINT_WARNINGS=$WARNINGS" >> $GITHUB_ENV
+            echo "LINT_STATUS=$([ "$ERRORS" -eq 0 ] && echo "✅ Pass" || echo "❌ Fail")" >> $GITHUB_ENV
+          else
+            echo "LINT_ERRORS=N/A" >> $GITHUB_ENV
+            echo "LINT_WARNINGS=N/A" >> $GITHUB_ENV
+            echo "LINT_STATUS=⚠️ Not Found" >> $GITHUB_ENV
+          fi
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            app/build/test-results/testDebugUnitTest/
+            app/build/outputs/connected_android_test_additional_output/
+
+      - name: Upload Lint Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-debug.html
+
+      - name: Publish Test Results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: "app/build/test-results/**/*.xml"
+
+      - name: PR Feedback Comment
+        # AC5 & AC6: Display build status in PR conversation.
+        # AC6 requires feedback within 2 minutes of build completion.
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { LINT_ERRORS, LINT_WARNINGS, LINT_STATUS, BUILD_DURATION_SECONDS, BUILD_TARGET_SECONDS } = process.env;
+            const jobStatus = "${{ job.status }}";
+            const lintStatus = LINT_STATUS;
+            const duration = parseInt(BUILD_DURATION_SECONDS || 0);
+            const target = parseInt(BUILD_TARGET_SECONDS || 300);
+            const minutes = Math.floor(duration / 60);
+            const seconds = duration % 60;
+            const timeStr = `${minutes}m ${seconds}s`;
+            const targetMinutes = Math.floor(target / 60);
+            
+            const icon = jobStatus === 'success' ? '✅' : '❌';
+            const statusText = jobStatus === 'success' ? 'All checks passed!' : 'Validation failed.';
+            
+            const body = `### PR Validation Summary ${icon}
+            
+            **Status:** ${statusText}
+            **Duration:** ${timeStr} ${duration < target ? '✅' : '⚠️'} (Target < ${targetMinutes}m)
+            
+            | Check | Status | Details |
+            |-------|--------|---------|
+            | **Lint** | ${lintStatus} | ${LINT_ERRORS} Errors, ${LINT_WARNINGS} Warnings |
+            | **Unit Tests** | \${{ steps.tests.outcome == 'success' ? '✅ Pass' : (steps.tests.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | JUnit Reports |
+            | **Instr. Tests** | \${{ steps.instrumented_tests.outcome == 'success' ? '✅ Pass' : (steps.instrumented_tests.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | Android Emulator |
+            | **Build** | \${{ steps.build.outcome == 'success' ? '✅ Pass' : (steps.build.outcome == 'skipped' ? '⚪ Skipped' : '❌ Fail') }} | assembleDebug |
+            
+            ---
+            *Reports and artifacts (including Lint HTML) are available in the [Artifacts Tab](https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}#artifacts) of the [Action Run Summary](https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }})*`;
+            
+            // Find existing comment to update or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(comment => comment.user.login === 'github-actions[bot]' && comment.body.includes('PR Validation Summary'));
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            }
+
+      - name: Build summary
+        if: always()
+        shell: bash
+        run: |
+          echo "### PR Validation: \${{ job.status == 'success' && '✅ PASS' || '❌ FAIL' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View Full PR Feedback and Artifacts](https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
