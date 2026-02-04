@@ -1,6 +1,6 @@
 # Story 1.8: Permission Flow for Installation
 
-Status: ready-for-dev
+Status: in-progress
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -66,39 +66,39 @@ So that installations don't fail mid-process due to missing permissions.
   - [ ] Add timestamp tracking to avoid stale permission checks (cache for 30 seconds)
 
 - [ ] **Task 2: Implement INSTALL_UNKNOWN_APPS Permission Handling** (AC: 3)
-  - [ ] Create permission request dialog with explanation text
-  - [ ] Use `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` intent
-  - [ ] Pass package name in intent: `intent.data = Uri.parse("package:$packageName")`
-  - [ ] Register `ActivityResultLauncher` in MainActivity
+  - [x] Create permission request dialog with explanation text
+  - [x] Use `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` intent
+  - [x] Pass package name in intent: `intent.data = Uri.parse("package:$packageName")`
+  - [x] Register `ActivityResultLauncher` in MainActivity
   - [ ] Handle permission grant result and update PermissionManager state
   - [ ] Log permission grant/deny events for debugging
   - [ ] Show "Permission granted. Continuing..." toast on success
 
 - [ ] **Task 3: Implement MANAGE_EXTERNAL_STORAGE Permission Handling** (AC: 4)
-  - [ ] Detect Android version (API 30+ uses `MANAGE_EXTERNAL_STORAGE`, API 29 uses scoped storage)
-  - [ ] For API 30+: Create dialog explaining "Manage all files" access requirement
-  - [ ] Use `Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` intent
+  - [x] Detect Android version (API 30+ uses `MANAGE_EXTERNAL_STORAGE`, API 29 uses scoped storage)
+  - [x] For API 30+: Create dialog explaining "Manage all files" access requirement
+  - [x] Use `Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` intent
   - [ ] For API 29: Use standard `WRITE_EXTERNAL_STORAGE` permission flow
-  - [ ] Register `ActivityResultLauncher` in MainActivity
+  - [x] Register `ActivityResultLauncher` in MainActivity
   - [ ] Handle permission grant result and update PermissionManager state
   - [ ] Show "Storage access granted. Games can now copy OBB files." toast on success
 
 - [ ] **Task 4: Create Permission Request UI Flow** (AC: 1, 2, 3, 4, 5, 6)
   - [ ] Add `permissionFlowState` to MainViewModel (IDLE, CHECKING, REQUESTING, COMPLETED, DENIED)
-  - [ ] Add `isPermissionFlowActive` flag to prevent duplicate permission requests
+  - [x] Add `isPermissionFlowActive` flag to prevent duplicate permission requests
   - [ ] Add `pendingInstallAfterPermissions` to store game user wants to install
-  - [ ] Create `PermissionRequestDialog` composable with explanation text
+  - [x] Create `PermissionRequestDialog` composable with explanation text (implemented as PermissionOverlay)
   - [ ] Add "Grant Permission" and "Cancel" buttons to dialog
   - [ ] Show dialog sequentially: INSTALL_UNKNOWN_APPS → MANAGE_EXTERNAL_STORAGE
   - [ ] Update UI to show "Permissions required" badge on game list items if permissions missing
 
 - [ ] **Task 5: Integrate Permission Check with Installation Flow** (AC: 2, 6, 7)
-  - [ ] Modify `MainViewModel.installGame()` to check permissions before starting
+  - [x] Modify `MainViewModel.installGame()` to check permissions before starting
   - [ ] If permissions missing: start permission flow, store pending game in `pendingInstallAfterPermissions`
   - [ ] If permissions granted: proceed with normal installation flow
   - [ ] If permission denied: show "Permission required. Grant it in Settings." toast, do not start installation
   - [ ] After permission flow completes: automatically retry `installGame()` for pending game
-  - [ ] Add permission check to queue processor before processing tasks
+  - [x] Add permission check to queue processor before processing tasks
 
 - [ ] **Task 6: Add Permission State Persistence** (AC: 5, 7)
   - [ ] Save permission state to SharedPreferences after each permission grant
