@@ -184,7 +184,7 @@ class MainRepository(private val context: Context) {
                     while (sevenZFile.read(sharedBuffer).also { bytesRead = it } != -1) {
                         out.write(sharedBuffer, 0, bytesRead)
                     }
-                    val content = out.toString(Charsets.UTF_8)
+                    val content = out.toString("UTF-8")
                     catalogCacheFile.writeText(content)
                     onGameListFound(content)
                 } else if (entryName.contains("/thumbnails/")) {

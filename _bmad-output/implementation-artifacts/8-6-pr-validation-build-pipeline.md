@@ -1,6 +1,6 @@
 # Story 8.6: PR Validation Build Pipeline
 
-Status: in-progress
+Status: review
 
 ## Story
 
@@ -45,11 +45,11 @@ so that I catch issues early before merging to main branch.
 - [x] [AI-Review][MEDIUM] Git Discrepancy : `sprint-status.yaml` modified but not documented in Dev Notes. Add note: "Updated sprint-status.yaml to mark story 8.6 as 'review'". [sprint-status.yaml]
 - [x] [AI-Review][MEDIUM] AC7 Not Measurable : Build time target (< 5 min) has no measurement/reporting. Add timing step to verify target is met. [pr-validation.yml]
 
-### Current Review (2026-02-04) - Follow-ups Created
-- [ ] [AI-Review][MEDIUM] Git Process : `.github/workflows/pr-validation.yml` shows as untracked (??) in git status. Commit this file before marking story as done. [pr-validation.yml]
-- [ ] [AI-Review][MEDIUM] Git Process : Story file `8-6-pr-validation-build-pipeline.md` shows as untracked (??). Commit to track review history. [8-6-pr-validation-build-pipeline.md]
-- [ ] [AI-Review][MEDIUM] Code Quality : `out.toByteArray().toString(Charsets.UTF_8)` adds unnecessary allocation. `ByteArrayOutputStream.toString(Charset)` is the proper method. Consider reverting to `out.toString(Charsets.UTF_8)`. [MainRepository.kt:187]
-- [ ] [AI-Review][LOW] Code Style : Redundant API level check in DownloadWorker. `checkSelfPermission` handles pre-API-33 gracefully; `Build.VERSION.SDK_INT < 33` condition is unnecessary complexity. [DownloadWorker.kt:710-717]
+### Current Review (2026-02-04) - All Fixed
+- [x] [AI-Review][MEDIUM] Git Process : `.github/workflows/pr-validation.yml` shows as untracked (??) in git status. Commit this file before marking story as done. [pr-validation.yml] -> FIXED (committed)
+- [x] [AI-Review][MEDIUM] Git Process : Story file `8-6-pr-validation-build-pipeline.md` shows as untracked (??). Commit to track review history. [8-6-pr-validation-build-pipeline.md] -> FIXED (committed)
+- [x] [AI-Review][MEDIUM] Code Quality : `out.toByteArray().toString(Charsets.UTF_8)` adds unnecessary allocation. `ByteArrayOutputStream.toString(Charset)` is the proper method. Consider reverting to `out.toString(Charsets.UTF_8)`. [MainRepository.kt:187] -> FIXED (used `out.toString("UTF-8")` for API 29 compatibility)
+- [x] [AI-Review][LOW] Code Style : Redundant API level check in DownloadWorker. `checkSelfPermission` handles pre-API-33 gracefully; `Build.VERSION.SDK_INT < 33` condition is unnecessary complexity. [DownloadWorker.kt:710-717] -> FIXED (simplified)
 
 ## Dev Notes
 
@@ -108,15 +108,15 @@ gemini-2.0-flash-exp
 
 **Reviewer:** Claude (GLM-4.7)
 **Review Type:** Adversarial Senior Developer Review
-**Outcome:** 0 HIGH, 3 MEDIUM, 1 LOW issues found - Status remains `review`
+**Outcome:** 0 HIGH, 3 MEDIUM, 1 LOW issues found - Status set to `review`
 
 **Findings:**
-1. Git process issue - Main workflow file untracked - Action item created
-2. Git process issue - Story file untracked - Action item created
-3. Code quality question - Unnecessary allocation in MainRepository.kt - Action item created
-4. Code style - Redundant API level check in DownloadWorker.kt - Action item created
+1. Git process issue - Main workflow file untracked - FIXED (committed)
+2. Git process issue - Story file untracked - FIXED (committed)
+3. Code quality question - Unnecessary allocation in MainRepository.kt - FIXED (used `out.toString("UTF-8")`)
+4. Code style - Redundant API level check in DownloadWorker.kt - FIXED (simplified)
 
-**Note:** All Acceptance Criteria implemented, all tasks completed. Issues are process-related and minor code quality concerns that don't block merge.
+**Note:** All Acceptance Criteria implemented, all tasks completed, and review follow-ups resolved. Ready for final review.
 
 ### Git Intelligence Summary
 
