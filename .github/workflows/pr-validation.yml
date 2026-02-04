@@ -51,7 +51,22 @@ jobs:
         id: tests
         if: success() || failure()
         timeout-minutes: 5
-        run: ./gradlew testDebugUnitTest
+        run: |
+          ./gradlew testDebugUnitTest
+          
+          # Verify that tests actually ran (AC4 quality gate)
+          TEST_RESULTS_DIR="app/build/test-results/testDebugUnitTest"
+          if [ -d "$TEST_RESULTS_DIR" ]; then
+            COUNT=$(find "$TEST_RESULTS_DIR" -name "*.xml" | wc -l)
+            if [ "$COUNT" -eq 0 ]; then
+              echo "❌ ERROR: No unit test results found. At least one test must exist."
+              exit 1
+            fi
+            echo "✅ Found $COUNT test result files."
+          else
+            echo "❌ ERROR: Test results directory not found."
+            exit 1
+          fi
 
       - name: Run Instrumented Tests
         id: instrumented_tests

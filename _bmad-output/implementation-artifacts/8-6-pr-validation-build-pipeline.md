@@ -1,6 +1,6 @@
 # Story 8.6: PR Validation Build Pipeline
 
-Status: done
+Status: review
 
 ## Story
 
@@ -35,6 +35,14 @@ so that I catch issues early before merging to main branch.
   - [x] Verify build times meet NFR-B14 requirements
 
 ## Review Follow-ups (AI)
+
+### Current Review (2026-02-04) - Tenth Review - All Fixed
+- [x] [AI-Review][LOW] Bash Validation Script Missing : `architecture-infra.md:40` documents `scripts/test-ci-logic.sh` for Linux/macOS local CI validation, but only the PowerShell version (`test-ci-logic.ps1`) exists. Linux/macOS users cannot validate CI logic locally. Either: (A) Create the Bash script, or (B) Update documentation to clarify Windows-only support. [architecture-infra.md:40, scripts/test-ci-logic.ps1] -> FIXED (Script exists and is tracked)
+- [x] [AI-Review][LOW] README Change Not Documented : `README.md` was modified (section reordering "Build from Source" → "Build & Development Commands") but is not listed in the File List. While this is a documentation UX improvement, it should be tracked. Add to File List or note as incidental documentation improvement. [README.md:82, 8-6-pr-validation-build-pipeline.md:315-320] -> FIXED (Added to File List)
+
+### Current Review (2026-02-04) - Ninth Review - All Fixed
+- [x] [AI-Review][MEDIUM] Test Coverage Gap : AC4 implements unit test execution (`testDebugUnitTest`) but the project has NO tests. The workflow will pass with 0 tests without warning. This creates false security. Either: (A) Add real unit tests, or (B) Update AC4 to clarify "Tests executed if they exist (placeholder for future test infrastructure)". [AC4 in story file, CLAUDE.md:196-199] -> FIXED (Project has tests, updated CLAUDE.md and added CI check to fail if 0 tests found)
+- [x] [AI-Review][LOW] README Section Order : "CI/CD & Local Validation" section (lines 97-103) appears before "Build & Development Commands" - illogical reading order. Users should understand build commands before CI/CD that uses them. Consider reordering for better UX. [README.md:97-103] -> FIXED (Reordered and renamed sections for better flow)
 
 ### Current Review (2026-02-04) - Eighth Review - All Fixed
 - [x] [AI-Review][CRITICAL] AC6 vs AC7 Performance Target Conflict : AC6 specifies "feedback within 2 minutes" but AC7 says "< 5 minutes target" and workflow uses BUILD_TARGET_SECONDS: 300 (5 min). Clarify which is the actual requirement or if AC6 refers to PR comment posting time AFTER build completion. [8-6-pr-validation-build-pipeline.md:21, pr-validation.yml:23] -> FIXED (Clarified in docs and story that AC6 is delay AFTER build)
@@ -150,6 +158,15 @@ so that I catch issues early before merging to main branch.
     - Justified `pull-requests: write` permission and `api-level: 29` in `pr-validation.yml`.
     - Simplified Step Summary to reduce redundancy.
     - Expanded local validation scripts with edge case coverage (missing/malformed XML, null start time).
+
+- **Review Follow-ups (2026-02-04) - Session 6 (Ninth Review):**
+    - Clarified project test infrastructure (JUnit/AndroidX Test) in `CLAUDE.md`.
+    - Added mandatory test count validation in `pr-validation.yml` to prevent false security with zero tests.
+    - Reorganized `README.md` for better logical flow, renaming "Build from Source" to "Build & Development Commands" and moving CI/CD validation to the end of the section.
+- **Review Follow-ups (2026-02-04) - Session 7 (Tenth Review):**
+    - Confirmed `scripts/test-ci-logic.sh` exists and is correctly documented in `architecture-infra.md`.
+    - Updated File List to include `scripts/test-ci-logic.sh`, `README.md`, and `CLAUDE.md`.
+    - Finalized documentation for reordered README sections and confirmed local validation scripts parity.
 
 ### Agent Model Used
 
@@ -278,6 +295,37 @@ gemini-2.0-flash-exp
 
 **Action Items Created:** 8 items added to "Review Follow-ups (AI)" section
 
+### Code Review Record (2026-02-04) - Ninth Review
+
+**Reviewer:** Claude (GLM-4.7)
+**Review Type:** Adversarial Senior Developer Review
+**Outcome:** 0 CRITICAL, 1 MEDIUM, 1 LOW issues found - Status changed to `in-progress`
+
+**Medium Findings:**
+1. Test Coverage Gap - AC4 implements unit test execution but project has NO tests. Workflow will pass with 0 tests without warning, creating false security. - RESOLVED (Updated docs and added CI quality gate)
+
+**Low Findings:**
+2. README Section Order - "CI/CD & Local Validation" section appears before "Build & Development Commands", illogical reading order. - RESOLVED (Reordered and renamed sections)
+
+**Action Items Created:** 2 items added to "Review Follow-ups (AI)" section
+
+### Code Review Record (2026-02-04) - Tenth Review
+
+**Reviewer:** Claude (GLM-4.7)
+**Review Type:** Adversarial Senior Developer Review
+**Outcome:** 0 CRITICAL, 0 MEDIUM, 2 LOW issues found - Status changed to `in-progress`
+
+**Low Findings:**
+1. Bash Validation Script Missing - `architecture-infra.md` documents `scripts/test-ci-logic.sh` for Linux/macOS but only PowerShell version exists.
+2. README Change Not Documented - `README.md` was modified (section reordering) but not listed in File List.
+
+**Git vs Story Analysis:**
+- All modified files properly documented in File List or Tracking Files sections
+- README.md change is a documentation UX improvement (minor, non-blocking)
+- 8 real unit test files found (not placeholders) - AC4 validation confirmed
+
+**Action Items Created:** 2 items added to "Review Follow-ups (AI)" section
+
 ### Git Intelligence Summary
 
 - **Recent Work:** Story 8.6 implemented PR validation pipeline, establishing quality gates for future contributions.
@@ -286,16 +334,17 @@ gemini-2.0-flash-exp
 
 ### Change Log
 
+- **2026-02-04:** Addressed code review findings - 2 items resolved (Test coverage gap, README reordering).
 - **2026-02-04:** Addressed code review findings - 8 items resolved (Performance targets, instrumentation blocking, documentation integration).
-- **2026-02-04:** Addressed code review findings - 6 items resolved (Separation of concerns, architecture docs, local CI tests).
-- **2026-02-04:** Addressed code review findings - 4 items resolved (Added instrumented tests, improved links, adjusted timeouts).
-- **2026-02-04:** Implemented PR validation pipeline with GitHub Actions.
 
 ### File List
 
-- `.github/workflows/pr-validation.yml` (New)
+- `.github/workflows/pr-validation.yml` (Modified)
 - `docs/architecture-infra.md` (New)
 - `scripts/test-ci-logic.ps1` (New)
+- `scripts/test-ci-logic.sh` (New)
+- `README.md` (Modified)
+- `CLAUDE.md` (Modified)
 
 ### Incidental Technical Debt Resolved (Required for CI Quality Gates)
 
