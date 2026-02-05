@@ -1,0 +1,76 @@
+name: 'Gradle Cache'
+description: 'Explicit Gradle caching for dependencies, wrapper, and build cache'
+runs:
+  using: "composite"
+  steps:
+    - name: Cache Gradle packages
+      id: gradle-cache
+      # Pinning to latest minor version per docs/ci-workflows.md versioning policy
+      uses: actions/cache@v4.2.0
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          ~/.gradle/notifications
+        # KEY GRANULARITY TRADE-OFF:
+        # We use a broad pattern (**/*.gradle.kts) to ensure build integrity.
+        # This means comments or formatting changes will invalidate the primary key.
+        # See docs/ci-workflows.md for detailed rationale.
+        key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', '**/gradle.properties', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          gradle-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties') }}-
+          gradle-${{ runner.os }}-
+    
+    - name: Report Cache Status
+      shell: bash
+      run: |
+        if [ "${{ steps.gradle-cache.outputs.cache-hit }}" = "true" ]; then
+          echo "✅ Gradle cache hit (Primary key)"
+        else
+          echo "ℹ️ Gradle cache miss (Partial or no restoration)"
+        fi
+
+    - name: Cache Health & Size Monitoring
+      shell: bash
+      run: |
+        echo "### Gradle Cache Monitoring"
+        
+        # 1. Size Monitoring
+        for dir in ~/.gradle/caches ~/.gradle/wrapper ~/.gradle/notifications; do
+          if [ -d "$dir" ]; then
+            SIZE=$(du -sh "$dir" | cut -f1)
+            echo "📊 Size of $dir: $SIZE"
+          else
+            echo "ℹ️ Directory $dir does not exist yet."
+          fi
+        done
+        
+        # 2. Health Check
+        if [ -d "~/.gradle/caches" ]; then
+          echo "🔍 Performing cache health check..."
+          # Check for a common marker that indicates a non-empty cache
+          if [ -z "$(ls -A ~/.gradle/caches 2>/dev/null)" ]; then
+            echo "⚠️ Warning: ~/.gradle/caches is empty despite restoration attempt."
+          else
+            echo "✅ Cache directory structure appears valid."
+          fi
+        fi
+
+    - name: Grant execute permission for gradlew
+      # Centralizing gradlew permission management here makes it implicit for all jobs.
+      # This ensures consistent behavior across PR Validation, Release, and Benchmarking.
+      shell: bash
+      run: |
+        if [ -f "gradlew" ]; then
+          chmod +x gradlew
+          echo "✅ Executable permission granted to gradlew"
+        else
+          echo "ℹ️ gradlew not found in current directory, skipping chmod"
+        fi
+
+# Cache Invalidation Strategy:
+# 1. Automatic: Key includes hashes of gradle-wrapper.properties and all build.gradle files.
+# 2. Manual: To force a clean cache, change the 'gradle-' prefix in the key to 'gradle-v2-' etc.
+# 3. Corrupted Cache: If build fails due to corrupted cache, delete caches via GitHub UI:
+#    Actions > Caches > [Delete entries matching this branch/key]
+

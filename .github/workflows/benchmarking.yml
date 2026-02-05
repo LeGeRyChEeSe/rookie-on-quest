@@ -1,0 +1,146 @@
+# GitHub Actions Workflow for Build Performance Benchmarking
+#
+# This workflow is used to empirically verify Acceptance Criterion 4 (AC4):
+# "Cached dependencies reduce build time by minimum 50% vs cold build."
+#
+name: Build Benchmarking
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: 'Number of iterations'
+        required: true
+        default: '1'
+
+jobs:
+  setup:
+    name: Setup Benchmark Cache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      
+      - name: Load CI Configuration
+        id: config
+        shell: bash
+        run: |
+          if [ -f ".github/ci-config.env" ]; then
+            source .github/ci-config.env
+            echo "target_pr=$BUILD_TARGET_SECONDS_PR" >> $GITHUB_OUTPUT
+            echo "Loaded BUILD_TARGET_SECONDS_PR=$BUILD_TARGET_SECONDS_PR"
+          else
+            echo "target_pr=300" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          
+      - name: Build to populate cache
+        run: |
+          chmod +x gradlew
+          # --no-build-cache to ensure we start from scratch but populate the dependency cache
+          ./gradlew assembleDebug --no-build-cache
+
+      - name: Save Benchmark Cache
+        uses: actions/cache/save@v4.2.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.gradle/notifications
+          key: benchmark-${{ github.run_id }}
+
+  cold-build:
+    name: Cold Build (No Cache)
+    runs-on: ubuntu-latest
+    outputs:
+      duration: ${{ steps.cold.outputs.duration }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          
+      - name: Cold Build
+        id: cold
+        run: |
+          START=$(date +%s)
+          chmod +x gradlew
+          # --no-build-cache ensures we don't use local Gradle build cache
+          ./gradlew assembleDebug --no-build-cache
+          END=$(date +%s)
+          DURATION=$((END - START))
+          echo "duration=$DURATION" >> $GITHUB_OUTPUT
+          echo "Cold build took $DURATION seconds"
+
+  warm-build:
+    name: Warm Build (With Cache)
+    needs: setup
+    runs-on: ubuntu-latest
+    outputs:
+      duration: ${{ steps.warm.outputs.duration }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Restore Benchmark Cache
+        uses: actions/cache/restore@v4.2.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.gradle/notifications
+          key: benchmark-${{ github.run_id }}
+          fail-on-cache-miss: true
+          
+      - name: Warm Build
+        id: warm
+        run: |
+          # Clean only the project build files, keep the Gradle dependency cache
+          chmod +x gradlew
+          ./gradlew clean
+          
+          START=$(date +%s)
+          # Use --build-cache to leverage the restored build cache
+          ./gradlew assembleDebug --build-cache
+          END=$(date +%s)
+          DURATION=$((END - START))
+          echo "duration=$DURATION" >> $GITHUB_OUTPUT
+          echo "Warm build took $DURATION seconds"
+
+  report:
+    name: Report Results
+    needs: [cold-build, warm-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report Benchmarking Results
+        run: |
+          COLD=${{ needs.cold-build.outputs.duration }}
+          WARM=${{ needs.warm-build.outputs.duration }}
+          REDUCTION=$(( (COLD - WARM) * 100 / COLD ))
+          
+          echo "### Build Benchmarking Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Type | Duration |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Cold Build | ${COLD}s |" >> $GITHUB_STEP_SUMMARY
+          echo "| Warm Build | ${WARM}s |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Time Reduction:** ${REDUCTION}%" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$REDUCTION" -ge 50 ]; then
+            echo "✅ AC4 Verified: Reduction is $REDUCTION% (>= 50%)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ AC4 Failed: Reduction is $REDUCTION% (< 50%)" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi

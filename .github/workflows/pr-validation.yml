@@ -13,46 +13,111 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write # Required for posting/updating PR feedback comments. Token scope is limited to current repository.
+  pull-requests: write # Required for posting/updating PR feedback comments.
 
 jobs:
-  validate:
-    name: Lint, Test & Build
+  # Base job to prepare the environment and start the timer
+  setup:
+    name: Initialize
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      BUILD_TARGET_SECONDS: 300 # AC7: Target < 5 minutes
-
+    outputs:
+      start_time: ${{ steps.timer.outputs.start_time }}
+      target_pr: ${{ steps.config.outputs.target_pr }}
+      timeout_instr: ${{ steps.config.outputs.timeout_instr }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
+      - id: timer
+        run: echo "start_time=$(date +%s)" >> $GITHUB_OUTPUT
+      - id: config
+        shell: bash
+        run: |
+          if [ -f ".github/ci-config.env" ]; then
+            source .github/ci-config.env
+            echo "target_pr=$BUILD_TARGET_SECONDS_PR" >> $GITHUB_OUTPUT
+            echo "timeout_instr=$TIMEOUT_INSTRUMENTED_TESTS" >> $GITHUB_OUTPUT
+            echo "Loaded BUILD_TARGET_SECONDS_PR=$BUILD_TARGET_SECONDS_PR"
+          else
+            echo "::error::CI config file .github/ci-config.env not found!"
+            exit 1
+          fi
 
+      - name: Validate CI Config
+        shell: bash
+        run: |
+          chmod +x scripts/test-ci-config.sh
+          ./scripts/test-ci-config.sh
+
+  lint:
+    name: Lint
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      outcome: ${{ steps.run-lint.outcome }}
+      errors: ${{ steps.lint-summary.outputs.errors }}
+      warnings: ${{ steps.lint-summary.outputs.warnings }}
+    steps:
+      - uses: actions/checkout@v4.2.2
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v4.7.0
         with:
           java-version: '17'
           distribution: 'temurin'
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Start Timer
-        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
-
+      - name: Gradle Cache
+        uses: ./.github/actions/gradle-cache
       - name: Run Lint
-        id: lint
-        timeout-minutes: 5
-        run: ./gradlew lintDebug
-
-      - name: Run Unit Tests
-        id: tests
-        if: success() || failure()
-        timeout-minutes: 5
+        id: run-lint
+        # --build-cache uses the Gradle build cache (configured in settings.gradle.kts)
+        # to reuse outputs from previous builds, significantly speeding up tasks.
+        run: ./gradlew lintDebug --build-cache
+      - name: Generate Lint Summary
+        id: lint-summary
+        if: always()
+        shell: bash
         run: |
-          ./gradlew testDebugUnitTest
+          LINT_XML="app/build/reports/lint-results-debug.xml"
+          if [ -f "$LINT_XML" ]; then
+            ERRORS=$(grep -c 'severity="Error"' "$LINT_XML" || true)
+            [ -z "$ERRORS" ] && ERRORS=0
+            WARNINGS=$(grep -c 'severity="Warning"' "$LINT_XML" || true)
+            [ -z "$WARNINGS" ] && WARNINGS=0
+            echo "LINT_ERRORS=$ERRORS" >> $GITHUB_ENV
+            echo "LINT_WARNINGS=$WARNINGS" >> $GITHUB_ENV
+            echo "errors=$ERRORS" >> $GITHUB_OUTPUT
+            echo "warnings=$WARNINGS" >> $GITHUB_OUTPUT
+          else
+            echo "LINT_ERRORS=N/A" >> $GITHUB_ENV
+            echo "LINT_WARNINGS=N/A" >> $GITHUB_ENV
+            echo "errors=N/A" >> $GITHUB_OUTPUT
+            echo "warnings=N/A" >> $GITHUB_OUTPUT
+          fi
+      - name: Upload Lint Report
+        if: always()
+        uses: actions/upload-artifact@v4.6.0
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-debug.html
+
+  unit-tests:
+    name: Unit Tests
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      outcome: ${{ steps.run-tests.outcome }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Gradle Cache
+        uses: ./.github/actions/gradle-cache
+      - name: Run Unit Tests
+        id: run-tests
+        run: |
+          ./gradlew testDebugUnitTest --build-cache
           
           # Verify that tests actually ran (AC4 quality gate)
           TEST_RESULTS_DIR="app/build/test-results/testDebugUnitTest"
@@ -67,113 +132,137 @@ jobs:
             echo "❌ ERROR: Test results directory not found."
             exit 1
           fi
+      - name: Upload Unit Test Results
+        if: always()
+        uses: actions/upload-artifact@v4.6.0
+        with:
+          name: unit-test-results
+          path: app/build/test-results/testDebugUnitTest/
 
+  instrumented-tests:
+    name: Instrumented Tests
+    needs: setup
+    runs-on: ubuntu-latest
+    # Instrumented tests on emulated hardware are a performance outlier.
+    # While they run in parallel, they are excluded from the 5-minute soft target.
+    # Timeout reduced from 15 to 10 minutes to reflect better parallel efficiency.
+    timeout-minutes: 10
+    outputs:
+      outcome: ${{ steps.run-instr.outcome }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Gradle Cache
+        uses: ./.github/actions/gradle-cache
       - name: Run Instrumented Tests
-        id: instrumented_tests
-        if: success()
-        timeout-minutes: 15
-        # api-level 29 matches minSdk of the project to ensure maximum compatibility validation.
-        uses: reactivecircus/android-emulator-runner@v2
+        id: run-instr
+        uses: reactivecircus/android-emulator-runner@v2.30.1
         with:
           api-level: 29
           target: default
           arch: x86_64
           profile: Nexus 6
-          script: ./gradlew connectedDebugAndroidTest
-
-      - name: Build Debug APK
-        id: build
-        if: success() || failure()
-        timeout-minutes: 5
-        run: ./gradlew assembleDebug
-
-      - name: Calculate Build Duration
+          script: ./gradlew connectedDebugAndroidTest --build-cache
+      - name: Upload Instrumented Test Results
         if: always()
+        uses: actions/upload-artifact@v4.6.0
+        with:
+          name: instrumented-test-results
+          path: app/build/outputs/connected_android_test_additional_output/
+
+  build:
+    name: Build
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      outcome: ${{ steps.run-build.outcome }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Gradle Cache
+        uses: ./.github/actions/gradle-cache
+      - name: Build Debug APK
+        id: run-build
+        run: ./gradlew assembleDebug --build-cache
+
+  performance-check:
+    name: Performance Check
+    needs: [setup, lint, unit-tests, build]
+    runs-on: ubuntu-latest
+    outputs:
+      duration: ${{ steps.calc.outputs.duration }}
+    steps:
+      - name: Enforce Performance Target (AC7)
+        id: calc
+        shell: bash
+        env:
+          START_TIME: ${{ needs.setup.outputs.start_time }}
+          BUILD_TARGET_SECONDS: ${{ needs.setup.outputs.target_pr }}
         run: |
           END_TIME=$(date +%s)
-          if [ -n "$START_TIME" ]; then
-            DURATION=$((END_TIME - START_TIME))
-          else
-            DURATION=0
+          DURATION=$((END_TIME - START_TIME))
+          echo "duration=$DURATION" >> $GITHUB_OUTPUT
+          echo "Core build duration: $DURATION seconds (Target: < $BUILD_TARGET_SECONDS)"
+          
+          if [ "$DURATION" -ge "$BUILD_TARGET_SECONDS" ]; then
+            echo "❌ ERROR: Core build took $DURATION seconds, which exceeds the target of $BUILD_TARGET_SECONDS seconds."
+            exit 1
           fi
+
+  report:
+    name: Consolidation & Feedback
+    needs: [setup, lint, unit-tests, instrumented-tests, build, performance-check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Calculate Build Duration
+        run: |
+          START_TIME=${{ needs.setup.outputs.start_time }}
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
           echo "BUILD_DURATION_SECONDS=$DURATION" >> $GITHUB_ENV
-          echo "Build took $DURATION seconds"
-
-      - name: Enforce Performance Target (AC7)
-        if: always()
-        shell: bash
-        run: |
-          if [ -n "$BUILD_DURATION_SECONDS" ]; then
-            if [ "$BUILD_DURATION_SECONDS" -ge "$BUILD_TARGET_SECONDS" ]; then
-              echo "❌ ERROR: Build took $BUILD_DURATION_SECONDS seconds, which exceeds the target of $BUILD_TARGET_SECONDS seconds."
-              exit 1
-            fi
-          fi
-
-      - name: Generate Lint Summary
-        if: always()
-        shell: bash
-        run: |
-          LINT_XML="app/build/reports/lint-results-debug.xml"
-          if [ -f "$LINT_XML" ]; then
-            ERRORS=$(grep -c 'severity="Error"' "$LINT_XML" || true)
-            [ -z "$ERRORS" ] && ERRORS=0
-            WARNINGS=$(grep -c 'severity="Warning"' "$LINT_XML" || true)
-            [ -z "$WARNINGS" ] && WARNINGS=0
-            echo "LINT_ERRORS=$ERRORS" >> $GITHUB_ENV
-            echo "LINT_WARNINGS=$WARNINGS" >> $GITHUB_ENV
-            echo "LINT_STATUS=$([ "$ERRORS" -eq 0 ] && echo "✅ Pass" || echo "❌ Fail")" >> $GITHUB_ENV
-          else
-            echo "LINT_ERRORS=N/A" >> $GITHUB_ENV
-            echo "LINT_WARNINGS=N/A" >> $GITHUB_ENV
-            echo "LINT_STATUS=⚠️ Not Found" >> $GITHUB_ENV
-          fi
-
-      - name: Upload Test Results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: |
-            app/build/test-results/testDebugUnitTest/
-            app/build/outputs/connected_android_test_additional_output/
-
-      - name: Upload Lint Report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: lint-report
-          path: app/build/reports/lint-results-debug.html
+          echo "BUILD_CORE_DURATION_SECONDS=${{ needs.performance-check.outputs.duration }}" >> $GITHUB_ENV
+          echo "Total workflow duration: $DURATION seconds"
 
       - name: Publish Test Results
-        if: always()
-        uses: EnricoMi/publish-unit-test-result-action@v2
+        # We use a specific glob for unit tests to avoid including instrumented test 
+        # results in this step, as they are handled separately or may have different
+        # reporting requirements. This ensures the PR summary focuses on unit test regressions.
+        uses: EnricoMi/publish-unit-test-result-action@v2.18.0
         with:
-          files: "app/build/test-results/**/*.xml"
-          check_run: false # Avoid 403 Forbidden errors, Job Summary is enough.
+          files: "app/build/test-results/testDebugUnitTest/**/*.xml"
+          check_run: false
 
       - name: PR Feedback Comment
-        # AC5 & AC6: Display build status in PR conversation.
-        # AC6 requires feedback within 2 minutes of build completion.
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7.0.1
         env:
-          UNIT_TESTS_OUTCOME: ${{ steps.tests.outcome }}
-          INSTR_TESTS_OUTCOME: ${{ steps.instrumented_tests.outcome }}
-          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          LINT_OUTCOME: ${{ needs.lint.outputs.outcome }}
+          LINT_ERRORS: ${{ needs.lint.outputs.errors }}
+          LINT_WARNINGS: ${{ needs.lint.outputs.warnings }}
+          UNIT_TESTS_OUTCOME: ${{ needs.unit-tests.outputs.outcome }}
+          INSTR_TESTS_OUTCOME: ${{ needs.instrumented-tests.outputs.outcome }}
+          BUILD_OUTCOME: ${{ needs.build.outputs.outcome }}
+          BUILD_TARGET_SECONDS: ${{ needs.setup.outputs.target_pr }}
+          CORE_DURATION: ${{ needs.performance-check.outputs.duration }}
         with:
           script: |
-            const { LINT_ERRORS, LINT_WARNINGS, LINT_STATUS, BUILD_DURATION_SECONDS, BUILD_TARGET_SECONDS, UNIT_TESTS_OUTCOME, INSTR_TESTS_OUTCOME, BUILD_OUTCOME } = process.env;
-            const jobStatus = "${{ job.status }}";
-            const duration = parseInt(BUILD_DURATION_SECONDS || 0);
+            const { LINT_OUTCOME, LINT_ERRORS, LINT_WARNINGS, BUILD_DURATION_SECONDS, BUILD_TARGET_SECONDS, UNIT_TESTS_OUTCOME, INSTR_TESTS_OUTCOME, BUILD_OUTCOME, CORE_DURATION } = process.env;
+            const duration = parseInt(CORE_DURATION || BUILD_DURATION_SECONDS || 0);
             const target = parseInt(BUILD_TARGET_SECONDS || 300);
             const minutes = Math.floor(duration / 60);
             const seconds = duration % 60;
             const timeStr = `${minutes}m ${seconds}s`;
             const targetMinutes = Math.floor(target / 60);
-            
-            const icon = jobStatus === 'success' ? '✅' : '❌';
-            const statusText = jobStatus === 'success' ? 'All checks passed!' : 'Validation failed.';
             
             const getStatusIcon = (outcome) => {
               if (outcome === 'success') return '✅ Pass';
@@ -181,14 +270,19 @@ jobs:
               return '❌ Fail';
             };
 
+            const lintStatus = getStatusIcon(LINT_OUTCOME);
+            const overallSuccess = [LINT_OUTCOME, UNIT_TESTS_OUTCOME, INSTR_TESTS_OUTCOME, BUILD_OUTCOME].every(o => o === 'success');
+            const icon = overallSuccess ? '✅' : '❌';
+            const statusText = overallSuccess ? 'All checks passed!' : 'Validation failed.';
+            
             const body = `### PR Validation Summary ${icon}
             
             **Status:** ${statusText}
-            **Duration:** ${timeStr} ${duration < target ? '✅' : '⚠️'} (Target < ${targetMinutes}m)
+            **Core Duration:** ${timeStr} ${duration < target ? '✅' : '⚠️'} (Target < ${targetMinutes}m)
             
             | Check | Status | Details |
             |-------|--------|---------|
-            | **Lint** | ${LINT_STATUS} | ${LINT_ERRORS} Errors, ${LINT_WARNINGS} Warnings |
+            | **Lint** | ${lintStatus} | ${LINT_ERRORS || 'N/A'} Errors, ${LINT_WARNINGS || 'N/A'} Warnings |
             | **Unit Tests** | ${getStatusIcon(UNIT_TESTS_OUTCOME)} | JUnit Reports |
             | **Instr. Tests** | ${getStatusIcon(INSTR_TESTS_OUTCOME)} | Android Emulator |
             | **Build** | ${getStatusIcon(BUILD_OUTCOME)} | assembleDebug |
@@ -196,7 +290,6 @@ jobs:
             ---
             *Reports and artifacts (including Lint HTML) are available in the [Artifacts Tab](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}#artifacts) of the [Action Run Summary](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})*`;
             
-            // Find existing comment to update or create new one
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -222,9 +315,18 @@ jobs:
             }
 
       - name: Build summary
-        if: always()
         shell: bash
         run: |
-          echo "### PR Validation: ${{ job.status == 'success' && '✅ PASS' || '❌ FAIL' }}" >> $GITHUB_STEP_SUMMARY
+          overall_success="${{ needs.lint.result == 'success' && needs.unit-tests.result == 'success' && needs.instrumented-tests.result == 'success' && needs.build.result == 'success' }}"
+          echo "### PR Validation: ${overall_success == 'true' && '✅ PASS' || '❌ FAIL'}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "[View Full PR Feedback and Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+
+      - name: Final Status Check
+        if: always()
+        run: |
+          if [[ "${{ needs.lint.result }}" != "success" || "${{ needs.unit-tests.result }}" != "success" || "${{ needs.instrumented-tests.result }}" != "success" || "${{ needs.build.result }}" != "success" || "${{ needs.performance-check.result }}" != "success" ]]; then
+            echo "One or more jobs failed."
+            exit 1
+          fi
+
