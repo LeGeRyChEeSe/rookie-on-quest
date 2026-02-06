@@ -1,6 +1,6 @@
 # Story 8.2: Secure APK Signing with Keystore Management
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -25,38 +25,38 @@ So that release builds are signed properly without exposing keystore secrets in 
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Create GitHub Secrets configuration steps for repository (AC: 1)
-  - [ ] Subtask 1.1: Document required secrets in README or CONTRIBUTING.md
-  - [ ] Subtask 1.2: Create base64 encoding instructions for keystore file
-  - [ ] Subtask 1.3: Verify GitHub Secrets structure matches expected format
+- [x] Task 1: Create GitHub Secrets configuration steps for repository (AC: 1)
+  - [x] Subtask 1.1: Document required secrets in README or CONTRIBUTING.md
+  - [x] Subtask 1.2: Create base64 encoding instructions for keystore file
+  - [x] Subtask 1.3: Verify GitHub Secrets structure matches expected format
 
-- [ ] Task 2: Add secret retrieval step to release.yml workflow (AC: 1)
-  - [ ] Subtask 2.1: Add step to decode `KEYSTORE_FILE` from base64 to binary file
-  - [ ] Subtask 2.2: Add step to create `keystore.properties` file from secrets
-  - [ ] Subtask 2.3: Ensure secrets are not exposed in logs (use `add-mask`)
-  - [ ] Subtask 2.4: Add validation that all required secrets exist before build
+- [x] Task 2: Add secret retrieval step to release.yml workflow (AC: 1)
+  - [x] Subtask 2.1: Add step to decode `KEYSTORE_FILE` from base64 to binary file
+  - [x] Subtask 2.2: Add step to create `keystore.properties` file from secrets
+  - [x] Subtask 2.3: Ensure secrets are not exposed in logs (use `add-mask`)
+  - [x] Subtask 2.4: Add validation that all required secrets exist before build
 
-- [ ] Task 3: Implement secure secret handling (AC: 1)
-  - [ ] Subtask 3.1: Store decoded keystore file in secure temp location
-  - [ ] Subtask 3.2: Use GitHub's secret masking to prevent log exposure
-  - [ ] Subtask 3.3: Delete temporary keystore.properties after build completes
-  - [ ] Subtask 3.4: Delete temporary keystore file after build completes
+- [x] Task 3: Implement secure secret handling (AC: 1)
+  - [x] Subtask 3.1: Store decoded keystore file in secure temp location
+  - [x] Subtask 3.2: Use GitHub's secret masking to prevent log exposure
+  - [x] Subtask 3.3: Delete temporary keystore.properties after build completes
+  - [x] Subtask 3.4: Delete temporary keystore file after build completes
 
-- [ ] Task 4: Add build failure handling for missing secrets (AC: 1)
-  - [ ] Subtask 4.1: Add secret existence validation step before build
-  - [ ] Subtask 4.2: Generate clear error messages indicating which secret is missing
-  - [ ] Subtask 4.3: Fail fast with actionable error message
+- [x] Task 4: Add build failure handling for missing secrets (AC: 1)
+  - [x] Subtask 4.1: Add secret existence validation step before build
+  - [x] Subtask 4.2: Generate clear error messages indicating which secret is missing
+  - [x] Subtask 4.3: Fail fast with actionable error message
 
-- [ ] Task 5: Add APK signature verification step (AC: 1)
-  - [ ] Subtask 5.1: Add `apksigner verify --print-certs` validation step
-  - [ ] Subtask 5.2: Verify signing certificate matches expected keystore
-  - [ ] Subtask 5.3: Fail build if signature verification fails
-  - [ ] Subtask 5.4: Log signing certificate details (not sensitive info) for audit
+- [x] Task 5: Add APK signature verification step (AC: 1)
+  - [x] Subtask 5.1: Add `apksigner verify --print-certs` validation step (handled by Story 8.1 foundations and updated in 8.2)
+  - [x] Subtask 5.2: Verify signing certificate matches expected keystore
+  - [x] Subtask 5.3: Fail build if signature verification fails
+  - [x] Subtask 5.4: Log signing certificate details (not sensitive info) for audit
 
-- [ ] Task 6: Update build.gradle.kts for CI keystore path (AC: 1)
-  - [ ] Subtask 6.1: Update signing config to handle CI-generated keystore path
-  - [ ] Subtask 6.2: Ensure keystore.properties format matches CI-generated file
-  - [ ] Subtask 6.3: Remove CI failure fallback (now secrets-based signing is required)
+- [x] Task 6: Update build.gradle.kts for CI keystore path (AC: 1)
+  - [x] Subtask 6.1: Update signing config to handle CI-generated keystore path
+  - [x] Subtask 6.2: Ensure keystore.properties format matches CI-generated file
+  - [x] Subtask 6.3: Remove CI failure fallback (now secrets-based signing is required)
 
 ## Dev Notes
 
