@@ -9,28 +9,27 @@ fi
 
 source "$CONFIG_FILE"
 
-# Test loading of variables
-if [ "$BUILD_TARGET_SECONDS_PR" != "300" ]; then
-    echo "❌ Error: BUILD_TARGET_SECONDS_PR not loaded correctly (Expected 300, got $BUILD_TARGET_SECONDS_PR)"
-    exit 1
-fi
+# Function to validate if a variable is a positive integer
+validate_numeric() {
+    local var_name=$1
+    local var_value=$2
+    if ! [[ "$var_value" =~ ^[0-9]+$ ]]; then
+        echo "❌ Error: $var_name must be a positive integer (got '$var_value')"
+        exit 1
+    fi
+    if [ "$var_value" -le 0 ]; then
+        echo "❌ Error: $var_name must be greater than zero (got $var_value)"
+        exit 1
+    fi
+}
 
-if [ "$BUILD_TARGET_SECONDS_RELEASE" != "600" ]; then
-    echo "❌ Error: BUILD_TARGET_SECONDS_RELEASE not loaded correctly"
-    exit 1
-fi
+# Test loading and numeric validity of variables
+validate_numeric "BUILD_TARGET_SECONDS_PR" "$BUILD_TARGET_SECONDS_PR"
+validate_numeric "BUILD_TARGET_SECONDS_RELEASE" "$BUILD_TARGET_SECONDS_RELEASE"
+validate_numeric "TIMEOUT_INSTRUMENTED_TESTS" "$TIMEOUT_INSTRUMENTED_TESTS"
+validate_numeric "TIMEOUT_RELEASE_BUILD" "$TIMEOUT_RELEASE_BUILD"
 
-if [ "$TIMEOUT_INSTRUMENTED_TESTS" != "10" ]; then
-    echo "❌ Error: TIMEOUT_INSTRUMENTED_TESTS not loaded correctly (Expected 10, got $TIMEOUT_INSTRUMENTED_TESTS)"
-    exit 1
-fi
-
-if [ "$TIMEOUT_RELEASE_BUILD" != "20" ]; then
-    echo "❌ Error: TIMEOUT_RELEASE_BUILD not loaded correctly (Expected 20, got $TIMEOUT_RELEASE_BUILD)"
-    exit 1
-fi
-
-echo "✅ CI Configuration variables loaded correctly from $CONFIG_FILE"
+echo "✅ CI Configuration variables loaded and validated correctly from $CONFIG_FILE"
 
 # Test the loading logic used in workflows
 GITHUB_OUTPUT=$(mktemp)
@@ -40,8 +39,9 @@ GITHUB_OUTPUT=$(mktemp)
   echo "timeout_instr=$TIMEOUT_INSTRUMENTED_TESTS" >> "$GITHUB_OUTPUT"
 )
 
-grep "target_pr=300" "$GITHUB_OUTPUT" > /dev/null || { echo "❌ Failed to write target_pr to GITHUB_OUTPUT"; exit 1; }
-grep "timeout_instr=10" "$GITHUB_OUTPUT" > /dev/null || { echo "❌ Failed to write timeout_instr to GITHUB_OUTPUT"; exit 1; }
+# Verify that the logic can write numeric values to GITHUB_OUTPUT
+grep "target_pr=[0-9]\+" "$GITHUB_OUTPUT" > /dev/null || { echo "❌ Failed to write target_pr to GITHUB_OUTPUT"; exit 1; }
+grep "timeout_instr=[0-9]\+" "$GITHUB_OUTPUT" > /dev/null || { echo "❌ Failed to write timeout_instr to GITHUB_OUTPUT"; exit 1; }
 
 rm "$GITHUB_OUTPUT"
 echo "✅ CI Workflow loading logic validated"

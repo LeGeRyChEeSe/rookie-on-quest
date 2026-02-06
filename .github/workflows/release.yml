@@ -52,9 +52,9 @@ jobs:
     name: Build Release APK
     runs-on: ubuntu-latest
     # NFR-B1: CI/CD workflow must complete release build within 10 minutes (soft target).
-    # Hard timeout increased to 20 minutes to provide ample headroom for infrastructure 
+    # Hard timeout set to 15 minutes to provide sufficient headroom for infrastructure 
     # variations while performance monitoring ensures the 10-minute SLA is respected.
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -257,35 +257,15 @@ jobs:
 
       - name: Clean build directory
         # ================================================================================
-        # CLEAN BUILD DIRECTORY - Ensures deterministic builds
+        # CLEAN BUILD DIRECTORY
         # ================================================================================
-        # This step removes stale build artifacts before building.
-        #
-        # NOTE ON FRESH RUNNERS:
-        # On completely fresh GitHub runners, the build directory doesn't exist yet,
-        # so this step might seem redundant. However, it's kept for several reasons:
-        # - Gradle caching (enabled) may restore previous build artifacts
-        # - Ensures deterministic builds regardless of runner state
-        # - Defensive measure against cache inconsistencies
-        #
-        # OPTIMIZATION CONSIDERED:
-        # We could skip this step with a conditional check like:
-        #   if: hashFiles('app/build/outputs/**') != ''
-        # However, the overhead is minimal (~2-3s) and consistency is preferred.
-        # Story 8.7 can evaluate removing this if caching behavior is verified.
-        #
-        # Using ./gradlew clean (not manual rm -rf) because:
-        # - Gradle knows exactly which directories to clean
-        # - Handles module-specific outputs correctly
-        # - Works reliably across different project structures
-        #
-        # TIMEOUT NOTE:
-        # 2 minutes allows for Gradle daemon startup + clean task on cold runners.
-        # On warm runners with Gradle caching, this completes in ~2-5 seconds.
+        # Using ./gradlew clean ensures deterministic builds and handles module-specific
+        # outputs correctly. Executable permissions for gradlew are managed by the
+        # gradle-cache composite action.
         timeout-minutes: 2
         shell: bash
         run: |
-          echo "Cleaning build directory to avoid stale artifacts..."
+          echo "Cleaning build directory..."
           ./gradlew clean --build-cache
           echo "Build directory cleaned"
 

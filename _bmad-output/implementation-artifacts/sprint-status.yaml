@@ -104,5 +104,5 @@ development_status:
   8-4-1-fix-proguard-gson-obfuscation: done
   8-5-release-candidate-build-support: done
   8-6-pr-validation-build-pipeline: review
-  8-7-build-dependency-caching-and-performance: review
+  8-7-build-dependency-caching-and-performance: done
   epic-8-retrospective: optional

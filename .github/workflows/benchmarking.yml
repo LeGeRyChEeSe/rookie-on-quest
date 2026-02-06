@@ -72,7 +72,9 @@ jobs:
         run: |
           START=$(date +%s)
           chmod +x gradlew
-          # --no-build-cache ensures we don't use local Gradle build cache
+          # --no-build-cache disables the Gradle local build cache (outputs reuse)
+          # but does NOT affect the Gradle dependency cache (~/.gradle/caches).
+          # This allows measuring build time from source without previous task outputs.
           ./gradlew assembleDebug --no-build-cache
           END=$(date +%s)
           DURATION=$((END - START))

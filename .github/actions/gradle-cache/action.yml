@@ -46,13 +46,14 @@ runs:
         done
         
         # 2. Health Check
-        if [ -d "~/.gradle/caches" ]; then
+        if [ -d "$HOME/.gradle/caches" ]; then
           echo "🔍 Performing cache health check..."
-          # Check for a common marker that indicates a non-empty cache
-          if [ -z "$(ls -A ~/.gradle/caches 2>/dev/null)" ]; then
-            echo "⚠️ Warning: ~/.gradle/caches is empty despite restoration attempt."
+          # Check for a common marker that indicates a functional dependency cache
+          # modules-2/modules-2.lock is a standard file created by Gradle
+          if [ ! -f "$HOME/.gradle/caches/modules-2/modules-2.lock" ]; then
+            echo "⚠️ Warning: Gradle dependency lock file not found. Cache may be partial or corrupted."
           else
-            echo "✅ Cache directory structure appears valid."
+            echo "✅ Cache directory structure and lock file appear valid."
           fi
         fi
 

@@ -145,7 +145,6 @@ jobs:
     runs-on: ubuntu-latest
     # Instrumented tests on emulated hardware are a performance outlier.
     # While they run in parallel, they are excluded from the 5-minute soft target.
-    # Timeout reduced from 15 to 10 minutes to reflect better parallel efficiency.
     timeout-minutes: 10
     outputs:
       outcome: ${{ steps.run-instr.outcome }}
